@@ -26,14 +26,14 @@ from inhand.rl.buffer import Rollout  # noqa: E402
 from inhand.rl.curriculum import EnvelopeADR, TargetCurriculum  # noqa: E402
 from inhand.rl.distill import Dagger  # noqa: E402
 from inhand.rl.nets import Actor  # noqa: E402
-from inhand.rl.ppo import PPOConfig, load_actor, load_critic, make_ppo  # noqa: E402
+from inhand.rl.ppo import PPOConfig, load_actor, make_ppo  # noqa: E402
 from inhand.rl.relabel import hindsight_relabel  # noqa: E402
 from inhand.scene import Scene  # noqa: E402
 from inhand.tasks.grasp_value import GraspEnv  # noqa: E402
 from inhand.tasks.monolithic import FullTaskEnv  # noqa: E402
 from inhand.tasks.primitives import PrimitiveEnv  # noqa: E402
 from inhand.tasks.reorient import ReorientEnv  # noqa: E402
-from inhand.vec import VecEnv  # noqa: E402
+from inhand.vec import SubprocVecEnv, VecEnv  # noqa: E402
 
 N_ACT = 23
 
@@ -50,10 +50,18 @@ def summarize(finished: list[dict]) -> dict:
             "lifted": float(np.mean([f["lifted"] for f in finished])), "reasons": reasons}
 
 
-def run_ppo(args, make_env, name: str, actor_key: str, recurrent: bool, adr=None, tcur=None, relabel=False):
-    cfg = Config(seed=args.seed)
+def make_vec(args, cfg, env_cls, kwargs_fn):
+    """kwargs_fn(i) -> constructor kwargs for env i. Processes if --workers, else threads."""
+    kws = [dict(seed=1000 * args.seed + i, **kwargs_fn(i)) for i in range(args.envs)]
+    if args.workers > 0:
+        return SubprocVecEnv(env_cls, cfg, kws, args.workers)
     scene = Scene(cfg)
-    vec = VecEnv([make_env(scene, cfg, i) for i in range(args.envs)], args.threads)
+    return VecEnv([env_cls(scene, cfg, **kw) for kw in kws], args.threads)
+
+
+def run_ppo(args, env_cls, kwargs_fn, name: str, actor_key: str, recurrent: bool, adr=None, tcur=None, relabel=False):
+    cfg = Config(seed=args.seed)
+    vec = make_vec(args, cfg, env_cls, kwargs_fn)
     if adr:
         adr.apply(vec)
     if tcur:
@@ -84,37 +92,32 @@ def run_ppo(args, make_env, name: str, actor_key: str, recurrent: bool, adr=None
         score = s.get("succ") if "succ" in s else (st["ret_mean"] if fin else None)
         ckpt.step(it, score, last=it == args.iters - 1)
     log.finish()
+    vec.close()
     return ppo
 
 
 def cmd_reorient_teacher(args):
     cfg = Config()
-    run_ppo(args, lambda sc, c, i: ReorientEnv(sc, c, seed=1000 * args.seed + i), "reorient_teacher",
-            actor_key="priv", recurrent=False, adr=EnvelopeADR(cfg.envelope),
-            tcur=TargetCurriculum(cfg.targets.ang_curriculum, cfg.targets.pos_curriculum))
+    run_ppo(args, ReorientEnv, lambda i: {}, "reorient_teacher", actor_key="priv", recurrent=False,
+            adr=EnvelopeADR(cfg.envelope), tcur=TargetCurriculum(cfg.targets.ang_curriculum, cfg.targets.pos_curriculum))
 
 
 def cmd_grasp_a(args):
-    critic = load_critic(args.critic, args.device)
-
-    @torch.no_grad()
-    def value_fn(batch):
-        return critic(torch.as_tensor(batch, device=args.device)).cpu().numpy()
-
-    run_ppo(args, lambda sc, c, i: GraspEnv(sc, c, value_fn, seed=1000 * args.seed + i, value_scale=args.value_scale),
+    # the critic is loaded inside each env (or worker) so the reward works across processes
+    run_ppo(args, GraspEnv, lambda i: dict(critic_path=args.critic, value_scale=args.value_scale),
             "grasp_a_teacher", actor_key="priv", recurrent=False)
 
 
 def cmd_mono_b(args):
     cfg = Config()
-    run_ppo(args, lambda sc, c, i: FullTaskEnv(sc, c, seed=1000 * args.seed + i), "mono_b",
-            actor_key="deploy", recurrent=True, adr=EnvelopeADR(cfg.envelope), relabel=not args.no_relabel)
+    run_ppo(args, FullTaskEnv, lambda i: {}, "mono_b", actor_key="deploy", recurrent=True,
+            adr=EnvelopeADR(cfg.envelope), relabel=not args.no_relabel)
 
 
 def cmd_skills_c(args):
     cfg = Config()
-    run_ppo(args, lambda sc, c, i: PrimitiveEnv(sc, c, seed=1000 * args.seed + i), "skills_c_teacher",
-            actor_key="priv", recurrent=False, adr=EnvelopeADR(cfg.envelope))
+    run_ppo(args, PrimitiveEnv, lambda i: {}, "skills_c_teacher", actor_key="priv", recurrent=False,
+            adr=EnvelopeADR(cfg.envelope))
 
 
 ENVS = {"reorient": ReorientEnv, "grasp": GraspEnv, "prims": PrimitiveEnv, "full": FullTaskEnv}
@@ -122,10 +125,9 @@ ENVS = {"reorient": ReorientEnv, "grasp": GraspEnv, "prims": PrimitiveEnv, "full
 
 def cmd_distill(args):
     cfg = Config(seed=args.seed)
-    scene = Scene(cfg)
     teacher = load_actor(args.teacher, args.device)
     student = Actor(DEPLOY.dim, N_ACT, recurrent=True)
-    vec = VecEnv([ENVS[args.env](scene, cfg, seed=1000 * args.seed + i) for i in range(args.envs)], args.threads)
+    vec = make_vec(args, cfg, ENVS[args.env], lambda i: {})
     dg = Dagger(teacher, student, args.device)
     log = Logger(Path(args.out), args.name, args, cfg)
 
@@ -146,13 +148,13 @@ def cmd_distill(args):
         # only student-driven episodes say anything about the student
         ckpt.step(it, s.get("succ") if beta == 0.0 else None, last=it == args.iters - 1)
     log.finish()
+    vec.close()
 
 
 def cmd_estimator_c(args):
     cfg = Config(seed=args.seed)
-    scene = Scene(cfg)
     policy = load_actor(args.policy, args.device)
-    vec = VecEnv([PrimitiveEnv(scene, cfg, seed=1000 * args.seed + i) for i in range(args.envs)], args.threads)
+    vec = make_vec(args, cfg, PrimitiveEnv, lambda i: {})
     est = Estimator()
     log = Logger(Path(args.out), "estimator_c", args, cfg)
     obs = vec.reset()
@@ -176,6 +178,7 @@ def cmd_estimator_c(args):
         log.log(it, loss=loss)
         torch.save(est.state_dict(), Path(args.out) / "estimator_c.pt")
     log.finish()
+    vec.close()
 
 
 def main():

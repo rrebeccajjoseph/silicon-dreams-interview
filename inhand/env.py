@@ -81,6 +81,7 @@ class CylinderEnv:
         self.d = mujoco.MjData(self.m)
         self._scratch = mujoco.MjData(self.m)
         self.horizon = int(round((horizon_s or cfg.success.horizon_s) * cfg.control.ctrl_hz))
+        self.cam_every = max(1, int(round(cfg.control.ctrl_hz / cfg.sensors.camera_hz)))
         self.hold_steps = cfg.success.hold_steps(cfg.control)
         self.n_act = self.m.nu
         self.ctrl_lo, self.ctrl_hi = self.m.actuator_ctrlrange.T
@@ -153,7 +154,7 @@ class CylinderEnv:
         self.ep.start_pose = "inhand"
         self.targets[7:] = HAND_CURL
         self.d.ctrl[:] = self.targets
-        for _ in range(25 * self.cfg.control.substeps):
+        for _ in range(12 * self.cfg.control.substeps):
             mujoco.mj_step(self.m, self.d)
         st = classify(self.m, self.d, self.ids)
         v = np.linalg.norm(self.d.qvel[self.ids.obj_dofadr:self.ids.obj_dofadr + 3])
@@ -241,9 +242,10 @@ class CylinderEnv:
         self.obj_p, self.obj_a = frames.in_palm(p_palm, R_palm, self.obj_pos_w, R_obj)
         self.contacts: ContactState = classify(self.m, self.d, self.ids)
         self.tact = tactile(self.m, self.d, self.ids, self.cfg.sensors.pads)
-        wrist = self.d.xpos[self.ids.palm_body] + self.d.xmat[self.ids.palm_body].reshape(3, 3) @ self.cfg.sensors.wrist_cam_pos
-        cams = np.vstack([self.ext_cams, wrist])
-        self.vis_frac = visible_fraction(self.m, self.d, self.ids, self.pts_obj, cams)
+        if self.ep.t % self.cam_every == 0:  # cameras run slower than the controller
+            wrist = self.d.xpos[self.ids.palm_body] + self.d.xmat[self.ids.palm_body].reshape(3, 3) @ self.cfg.sensors.wrist_cam_pos
+            cams = np.vstack([self.ext_cams, wrist])
+            self.vis_frac = visible_fraction(self.m, self.d, self.ids, self.pts_obj, cams)
         self.R_palm = R_palm
         self.p_palm = p_palm
 

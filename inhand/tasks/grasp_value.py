@@ -19,13 +19,26 @@ ValueFn = Callable[[np.ndarray], np.ndarray]  # priv obs [K, Dp] -> values [K]
 
 class GraspEnv(CylinderEnv):
     def __init__(self, scene: Scene, cfg: Config, value_fn: ValueFn | None = None, seed: int = 0,
-                 settle_steps: int = 10, n_targets: int = 16, value_scale: float = 1.0, **kw):
+                 settle_steps: int = 10, n_targets: int = 16, value_scale: float = 1.0,
+                 critic_path: str | None = None, **kw):
         super().__init__(scene, cfg, mode="ground", seed=seed, horizon_s=8.0, **kw)
-        self.value_fn = value_fn
+        self.value_fn = value_fn or (self._critic_value_fn(critic_path) if critic_path else None)
         self.settle_steps = settle_steps
         self.n_targets = n_targets
         self.value_scale = value_scale
         self.held = 0
+
+    @staticmethod
+    def _critic_value_fn(path: str) -> ValueFn:
+        import torch
+        from ..rl.ppo import load_critic
+        critic = load_critic(path, "cpu")
+
+        @torch.no_grad()
+        def value_fn(batch):
+            return critic(torch.as_tensor(batch)).numpy()
+
+        return value_fn
 
     def _on_reset(self) -> None:
         self.held = 0

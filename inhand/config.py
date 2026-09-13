@@ -56,7 +56,8 @@ class Sensors:
     # vision stand-in: ground-truth pose is exposed only when this fraction of
     # sampled surface points is visible from at least one camera
     visible_frac: float = 0.3
-    n_surface_pts: int = 48
+    n_surface_pts: int = 32
+    camera_hz: float = 5.0  # pose estimate refreshes at this rate, held in between
     cameras: tuple[tuple[float, float, float], ...] = (
         (1.1, 0.7, 0.9),    # fixed external, looking at the workspace
         (1.1, -0.7, 0.9),   # second external, other side
