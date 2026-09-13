@@ -23,6 +23,7 @@ def base_parser(desc: str) -> argparse.ArgumentParser:
     p.add_argument("--threads", type=int, default=8, help="thread pool size when --workers is 0")
     p.add_argument("--workers", type=int, default=0, help="env worker processes (0 = threads in-process)")
     p.add_argument("--save-every", type=int, default=25)
+    p.add_argument("--minutes", type=float, default=0, help="stop after this wall time (0 = run all iters)")
     p.add_argument("--wandb", action="store_true", help="log to Weights & Biases")
     p.add_argument("--project", default="cylinder-reorient-rl")
     p.add_argument("--run-name", default=None)

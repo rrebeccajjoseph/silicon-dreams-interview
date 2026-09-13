@@ -27,8 +27,9 @@ class PPOConfig:
     ent: float = 0.0
     vf: float = 1.0
     max_grad: float = 1.0
-    target_kl: float = 0.03
+    target_kl: float = 0.02
     action_noise_floor: float = -2.5  # log std lower bound
+    lr_bounds: tuple[float, float] = (1e-5, 1e-3)  # KL-adaptive, as in rl_games
 
 
 class PPO:
@@ -118,7 +119,14 @@ class PPO:
             if stats["kl"] / stats["n"] > cfg.target_kl:
                 break
         n = stats.pop("n")
-        return {k: v / n for k, v in stats.items()} | {"ret_mean": ret.mean().item(), "std": self.actor.log_std.exp().mean().item()}
+        kl = stats["kl"] / n
+        lr = self.opt.param_groups[0]["lr"]
+        if kl > 2 * cfg.target_kl:
+            lr = max(cfg.lr_bounds[0], lr / 1.5)
+        elif kl < 0.5 * cfg.target_kl:
+            lr = min(cfg.lr_bounds[1], lr * 1.5)
+        self.opt.param_groups[0]["lr"] = lr
+        return {k: v / n for k, v in stats.items()} | {"ret_mean": ret.mean().item(), "std": self.actor.log_std.exp().mean().item(), "lr": lr}
 
     def _gae(self, rew, done, val, last_val):
         T = rew.shape[0]

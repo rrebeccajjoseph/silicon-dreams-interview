@@ -16,6 +16,10 @@ ASSETS = Path(__file__).resolve().parent.parent / "assets" / "menagerie"
 ARM_XML = ASSETS / "ufactory_xarm7" / "xarm7_nohand.xml"
 HAND_XML = ASSETS / "leap_hand" / "right_hand.xml"
 
+# the hand sits on a bracket this far out from the flange, like a real LEAP mount; it
+# keeps long rods lying across the palm from touching the wrist link
+MOUNT_OFFSET = 0.04
+
 # palm frame in the LEAP palm body: origin on the palm face under the fingers,
 # x toward the fingertips, z is the outward palm normal (object side)
 PALM_SITE_POS = (-0.02, -0.037, -0.03)
@@ -88,8 +92,10 @@ def build_spec(cfg: Config) -> mujoco.MjSpec:
     spec.option.impratio = 100
     spec.option.noslip_iterations = 2
 
-    site = next(s for s in spec.sites if s.name == "attachment_site")
-    spec.attach(hand, prefix="hand/", site=site)
+    flange = next(s for s in spec.sites if s.name == "attachment_site")
+    link7 = next(b for b in spec.bodies if b.name == "link7")
+    mount = link7.add_site(name="hand_mount", pos=np.asarray(flange.pos) + [0, 0, MOUNT_OFFSET], quat=flange.quat)
+    spec.attach(hand, prefix="hand/", site=mount)
 
     palm = next(b for b in spec.bodies if b.name == "hand/palm")
     s = palm.add_site(name="palm_frame", pos=PALM_SITE_POS, quat=PALM_SITE_QUAT, size=[0.004] * 3)

@@ -68,8 +68,8 @@ class Sensors:
 
 @dataclass
 class Control:
-    sim_dt: float = 0.002
-    ctrl_hz: float = 20.0
+    sim_dt: float = 0.004   # 2 ms was stable too but 1.65x slower; no NaNs or extra drops at 4 ms
+    ctrl_hz: float = 25.0   # 10 substeps
     arm_step: float = 0.04    # rad per control step, delta position target
     hand_step: float = 0.25
 

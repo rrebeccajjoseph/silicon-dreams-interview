@@ -99,18 +99,18 @@ class CylinderEnv:
     def reset(self, obj: ObjectParams | None = None, start_pose: str | None = None) -> dict:
         self.ep = EpisodeState()
         self.prev_action[:] = 0
-        for attempt in range(40):
-            # a few shapes refuse to seat in the hand; resample unless the object is pinned
+        attempt = 0
+        while True:
+            # a few shapes refuse to seat in the hand; resample the object every few tries
+            # (a pinned object is released after 40 failures rather than crashing a worker)
             if attempt % 10 == 0:
-                self.obj = obj or sample_object(self.envelope, self.cfg.friction, self.rng)
+                self.obj = obj if (obj is not None and attempt < 40) else sample_object(self.envelope, self.cfg.friction, self.rng)
                 apply_object(self.m, self.ids, self.obj)
                 self.pts_obj = cylinder_surface_points(self.obj.r, self.obj.h, self.cfg.sensors.n_surface_pts, self.rng)
             mujoco.mj_resetData(self.m, self.d)
-            ok = self._reset_on_ground(start_pose) if self.mode == "ground" else self._reset_in_hand()
-            if ok:
+            if self._reset_on_ground(start_pose) if self.mode == "ground" else self._reset_in_hand():
                 break
-        else:
-            raise RuntimeError("could not produce a valid reset")
+            attempt += 1
         self._update_state()
         self.ep.lifted = self.contacts.hand_only
         self.ep.lift_step = 0 if self.ep.lifted else -1

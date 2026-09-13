@@ -55,8 +55,8 @@ asserts every deployed actor's input width equals `DEPLOY.dim`.
 
 ## Commands
 
-Everything below was run for a two-iteration smoke test on a laptop. Real runs need
-the iteration counts in the table further down.
+Everything below was run for a two-iteration smoke test on a laptop. On the cluster the
+same commands run with `--workers 64 --minutes <budget>`; see `scripts/remote/`.
 
 ```bash
 # shared: privileged reorient teacher (plans A and C reuse its critic / structure)
@@ -94,6 +94,8 @@ Everything here is a field in `inhand/config.py` unless noted.
 
 **Palm frame.** Site `palm_frame` on the LEAP palm body: origin on the palm face under
 the fingers, x toward the fingertips, y across the fingers, z the outward palm normal.
+The hand sits on a 40 mm bracket beyond the xArm7 flange, like a real LEAP mount; without
+it, long rods lying across the palm touch the wrist link and every episode fails.
 
 **Envelope G.** Radius 1.2 to 3.5 cm, height 2 to 16 cm, sampled independently, so
 aspect ratio spans about 0.3 to 6.7. Finger span across index to ring is about 9 cm and
@@ -107,13 +109,14 @@ control rate. All contacts count, not only the object. This is a uSkin-class pat
 centroid extraction, assumed noiseless.
 
 **Vision stand-in.** Ground-truth palm-frame pose plus radius and height are exposed
-only when at least 30 percent of 48 area-weighted surface samples are unoccluded from
+only when at least 30 percent of 32 area-weighted surface samples are unoccluded from
 one of three cameras: two fixed at (1.1, +-0.7, 0.9) m and a wrist camera on a bracket
-behind the palm. Occlusion is a ray cast against the full scene. When gated off, the
+behind the palm. Occlusion is a ray cast against the full scene, refreshed at 5 Hz. When gated off, the
 last visible estimate is passed with a zero flag.
 
-**Control.** 2 ms physics, 20 Hz policy, delta joint-position targets clipped to the
-URDF ranges (arm 0.04 rad per step, hand 0.25 rad per step). Position actuators as
+**Control.** 4 ms physics, 25 Hz policy (10 substeps), delta joint-position targets
+clipped to the URDF ranges (arm 0.04 rad per step, hand 0.25 rad per step). 2 ms was
+checked to behave the same and is 1.65x slower. Position actuators as
 shipped in Menagerie. No latency modeled. Contact: elliptic cones, impratio 100,
 implicit-fast integrator, cylinder with condim 4.
 
@@ -131,16 +134,12 @@ lift pose and widens on success.
 non-hand contact after lift, or 0.25 s without hand contact, ends the episode as a
 failure. Hand-to-floor contact is allowed and logged.
 
-**Compute.** Threaded CPU MuJoCo runs about 2600 env-steps/s on 16 threads on an M-series
-laptop. Budget for the full stack is in the table.
-
-| Stage | envs x iters x T | env steps | est. wall on 32 cores |
-|---|---|---|---|
-| reorient teacher | 64 x 1500 x 64 | 6 M | 1 h |
-| grasp A | 64 x 800 x 64 | 3 M | 0.5 h |
-| mono B | 64 x 3000 x 64 | 12 M | 2 h |
-| skills C | 64 x 800 x 64 | 3 M | 0.5 h |
-| distill x3, estimator | | 2 M | 0.5 h |
+**Compute.** CPU MuJoCo. The in-hand stage is contact-rich and runs about 700
+env-steps/s on 8 laptop cores; on Delta one A100 node share (16 EPYC cores) gave about
+285 env-steps/s with 16 worker processes and the 2 ms step. The cluster script
+(`scripts/remote/delta_submit.sh`) takes whole 64-core nodes and time-boxes each stage
+with `--minutes`; the default schedule is a 3 hour end-to-end run, and `scale` stretches
+it. Every stage logs to W&B project `cylinder-reorient-rl`.
 
 ## Status
 

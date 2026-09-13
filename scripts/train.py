@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +37,15 @@ from inhand.tasks.reorient import ReorientEnv  # noqa: E402
 from inhand.vec import SubprocVecEnv, VecEnv  # noqa: E402
 
 N_ACT = 23
+
+
+def budget(args):
+    """Iteration generator that also honours --minutes."""
+    t0 = time.time()
+    for it in range(args.iters):
+        yield it, (it == args.iters - 1) or (args.minutes > 0 and time.time() - t0 > 60 * args.minutes)
+        if args.minutes > 0 and time.time() - t0 > 60 * args.minutes:
+            return
 
 
 def summarize(finished: list[dict]) -> dict:
@@ -72,7 +82,7 @@ def run_ppo(args, env_cls, kwargs_fn, name: str, actor_key: str, recurrent: bool
     obs = vec.reset()
     h = ppo.actor.init_hidden(args.envs, args.device)
     steps = 0
-    for it in range(args.iters):
+    for it, last in budget(args):
         ro, obs, h, fin = ppo.collect(vec, obs, h)
         steps += ro.T * ro.N
         if relabel:
@@ -90,7 +100,7 @@ def run_ppo(args, env_cls, kwargs_fn, name: str, actor_key: str, recurrent: bool
         log.log(it, steps=steps, **st, **s, adr=adr.frac if adr else None, tcur=tcur.frac if tcur else None)
         # plan A's grasp has no success signal of its own; rank it by the value it earns
         score = s.get("succ") if "succ" in s else (st["ret_mean"] if fin else None)
-        ckpt.step(it, score, last=it == args.iters - 1)
+        ckpt.step(it, score, last=last)
     log.finish()
     vec.close()
     return ppo
@@ -138,7 +148,7 @@ def cmd_distill(args):
     ckpt = Checkpointer(Path(args.out), args.name, save, args.save_every)
     obs = vec.reset()
     h = student.init_hidden(args.envs, args.device)
-    for it in range(args.iters):
+    for it, last in budget(args):
         beta = max(0.0, 1.0 - it / max(1, args.iters // 2))  # teacher fades out over the first half
         obs, h, fin = dg.collect(vec, obs, h, beta, args.T)
         dg.chunks = dg.chunks[-args.keep_chunks:]
@@ -146,7 +156,7 @@ def cmd_distill(args):
         s = summarize(fin)
         log.log(it, beta=beta, loss=loss, **s)
         # only student-driven episodes say anything about the student
-        ckpt.step(it, s.get("succ") if beta == 0.0 else None, last=it == args.iters - 1)
+        ckpt.step(it, s.get("succ") if beta == 0.0 else None, last=last)
     log.finish()
     vec.close()
 
@@ -160,7 +170,7 @@ def cmd_estimator_c(args):
     obs = vec.reset()
     h = policy.init_hidden(args.envs, args.device)
     chunks = []
-    for it in range(args.iters):
+    for it, last in budget(args):
         bo, bp, bd = [], [], []
         with torch.no_grad():
             for _ in range(args.T):
