@@ -25,18 +25,18 @@ job() {  # name, dependency job ids (comma or empty), command
 #SBATCH -J $name
 #SBATCH -o slurm/%x-%j.out
 cd $WORK
-export PATH="\$HOME/.local/bin:\$PATH" OMP_NUM_THREADS=4 UV_CACHE_DIR=/work/nvme/beig/rjoseph2/.uv-cache UV_PYTHON_INSTALL_DIR=/work/nvme/beig/rjoseph2/.uv-python
+export PATH="\$HOME/.local/bin:\$PATH" OMP_NUM_THREADS=1 UV_CACHE_DIR=/work/nvme/beig/rjoseph2/.uv-cache UV_PYTHON_INSTALL_DIR=/work/nvme/beig/rjoseph2/.uv-python
 $cmd
 EOS
 }
 
 PY="uv run python scripts/train.py"
-COMMON="--envs $ENVS --threads 16 --out $CK $WB"
+COMMON="--envs $ENVS --workers 16 --out $CK $WB"
 
 R=$(job reorient  "" "$PY reorient-teacher --iters 1500 $COMMON")
 S=$(job skills_c  "" "$PY skills-c --iters 800 $COMMON")
 B=$(job mono_b    "" "$PY mono-b --iters 3000 $COMMON")
-BN=$(job mono_b_norelabel "" "$PY mono-b --no-relabel --iters 3000 --envs $ENVS --threads 16 --out $CK/ablation --run-name mono_b_norelabel $WB")
+BN=$(job mono_b_norelabel "" "$PY mono-b --no-relabel --iters 3000 --envs $ENVS --workers 16 --out $CK/ablation --run-name mono_b_norelabel $WB")
 G=$(job grasp_a   "$R" "$PY grasp-a --critic $CK/reorient_teacher.pt --iters 800 $COMMON")
 DR=$(job distill_reorient "$R" "$PY distill --teacher $CK/reorient_teacher.pt --env reorient --name reorient_student --iters 200 $COMMON")
 DG=$(job distill_grasp    "$G" "$PY distill --teacher $CK/grasp_a_teacher.pt --env grasp --name grasp_a_student --iters 200 $COMMON")
