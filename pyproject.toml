@@ -1,0 +1,28 @@
+[project]
+name = "inhand"
+version = "0.1.0"
+description = "In-hand cylinder reorientation with a delayed target: three RL decompositions"
+requires-python = ">=3.12"
+dependencies = [
+    "imageio[ffmpeg]>=2.37.4",
+    "mujoco>=3.13.0",
+    "numpy>=2.5.3",
+    "pytest>=9.1.1",
+    "pyyaml>=6.0.3",
+    "torch>=2.14.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["inhand"]
+
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::UserWarning"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.7",
+]
