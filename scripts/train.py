@@ -17,7 +17,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import Logger, base_parser  # noqa: E402
+from common import Checkpointer, Logger, base_parser  # noqa: E402
 
 from inhand.config import Config  # noqa: E402
 from inhand.observations import DEPLOY  # noqa: E402
@@ -59,7 +59,8 @@ def run_ppo(args, make_env, name: str, actor_key: str, recurrent: bool, adr=None
     if tcur:
         tcur.apply(vec)
     ppo = make_ppo(N_ACT, PPOConfig(T=args.T), recurrent, args.device, actor_key)
-    log = Logger(Path(args.out), name)
+    log = Logger(Path(args.out), name, args, cfg)
+    ckpt = Checkpointer(Path(args.out), name, ppo.save, args.save_every)
     obs = vec.reset()
     h = ppo.actor.init_hidden(args.envs, args.device)
     steps = 0
@@ -79,8 +80,10 @@ def run_ppo(args, make_env, name: str, actor_key: str, recurrent: bool, adr=None
                 if cur.gate.maybe_step():
                     cur.apply(vec)
         log.log(it, steps=steps, **st, **s, adr=adr.frac if adr else None, tcur=tcur.frac if tcur else None)
-        if it % 25 == 0 or it == args.iters - 1:
-            ppo.save(str(Path(args.out) / f"{name}.pt"))
+        # plan A's grasp has no success signal of its own; rank it by the value it earns
+        score = s.get("succ") if "succ" in s else (st["ret_mean"] if fin else None)
+        ckpt.step(it, score, last=it == args.iters - 1)
+    log.finish()
     return ppo
 
 
@@ -124,7 +127,13 @@ def cmd_distill(args):
     student = Actor(DEPLOY.dim, N_ACT, recurrent=True)
     vec = VecEnv([ENVS[args.env](scene, cfg, seed=1000 * args.seed + i) for i in range(args.envs)], args.threads)
     dg = Dagger(teacher, student, args.device)
-    log = Logger(Path(args.out), args.name)
+    log = Logger(Path(args.out), args.name, args, cfg)
+
+    def save(path):
+        torch.save({"actor": student.state_dict(), "actor_kw": dict(obs_dim=DEPLOY.dim, act_dim=N_ACT, recurrent=True),
+                    "critic": {}, "critic_kw": {}, "actor_key": "deploy"}, path)
+
+    ckpt = Checkpointer(Path(args.out), args.name, save, args.save_every)
     obs = vec.reset()
     h = student.init_hidden(args.envs, args.device)
     for it in range(args.iters):
@@ -132,10 +141,11 @@ def cmd_distill(args):
         obs, h, fin = dg.collect(vec, obs, h, beta, args.T)
         dg.chunks = dg.chunks[-args.keep_chunks:]
         loss = dg.train(epochs=args.epochs)
-        log.log(it, beta=beta, loss=loss, **summarize(fin))
-        if it % 10 == 0 or it == args.iters - 1:
-            torch.save({"actor": student.state_dict(), "actor_kw": dict(obs_dim=DEPLOY.dim, act_dim=N_ACT, recurrent=True),
-                        "critic": {}, "critic_kw": {}, "actor_key": "deploy"}, Path(args.out) / f"{args.name}.pt")
+        s = summarize(fin)
+        log.log(it, beta=beta, loss=loss, **s)
+        # only student-driven episodes say anything about the student
+        ckpt.step(it, s.get("succ") if beta == 0.0 else None, last=it == args.iters - 1)
+    log.finish()
 
 
 def cmd_estimator_c(args):
@@ -144,7 +154,7 @@ def cmd_estimator_c(args):
     policy = load_actor(args.policy, args.device)
     vec = VecEnv([PrimitiveEnv(scene, cfg, seed=1000 * args.seed + i) for i in range(args.envs)], args.threads)
     est = Estimator()
-    log = Logger(Path(args.out), "estimator_c")
+    log = Logger(Path(args.out), "estimator_c", args, cfg)
     obs = vec.reset()
     h = policy.init_hidden(args.envs, args.device)
     chunks = []
@@ -165,6 +175,7 @@ def cmd_estimator_c(args):
         loss = train_estimator(est, *[np.concatenate([c[k] for c in chunks], 1) for k in range(3)], epochs=args.epochs, device=args.device)
         log.log(it, loss=loss)
         torch.save(est.state_dict(), Path(args.out) / "estimator_c.pt")
+    log.finish()
 
 
 def main():
