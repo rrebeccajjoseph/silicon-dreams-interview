@@ -23,7 +23,7 @@ def base_parser(desc: str) -> argparse.ArgumentParser:
     p.add_argument("--threads", type=int, default=8)
     p.add_argument("--save-every", type=int, default=25)
     p.add_argument("--wandb", action="store_true", help="log to Weights & Biases")
-    p.add_argument("--project", default="inhand-cylinder")
+    p.add_argument("--project", default="cylinder-reorient-rl")
     p.add_argument("--run-name", default=None)
     return p
 
