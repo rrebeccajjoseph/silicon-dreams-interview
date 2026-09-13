@@ -43,9 +43,9 @@ class Signals:
 def reward_fn(w: RewardWeights, s: Signals) -> float:
     r = -w.action * s.action_sq
     if s.lifted:
-        r += -w.pos * s.epos - w.ang * s.eang + w.in_tol * float(s.in_tol)
+        r += w.pos * np.exp(-s.epos / w.pos_scale) + w.ang * np.exp(-s.eang / w.ang_scale) + w.in_tol * float(s.in_tol)
     else:
-        r += -w.approach * s.palm_obj_dist  # target-free by construction
+        r += w.approach * np.exp(-s.palm_obj_dist / w.approach_scale)  # target-free by construction
     r += w.lift * float(s.lifted_now) + w.success * float(s.success)
     r += w.drop * float(s.dropped) + w.violation * float(s.violation)
     return float(r)

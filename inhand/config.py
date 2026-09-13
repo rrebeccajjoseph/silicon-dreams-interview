@@ -106,16 +106,23 @@ class Targets:
 
 @dataclass
 class RewardWeights:
-    pos: float = 10.0
-    ang: float = 3.0
-    in_tol: float = 1.0
+    """Dense terms are bounded and positive so an episode is always worth continuing.
+    With negative per-step shaping the first policies learned to end episodes early by
+    pushing the object into the arm or off the table."""
+
+    pos: float = 1.0          # * exp(-epos / pos_scale)
+    ang: float = 1.0          # * exp(-eang / ang_scale)
+    pos_scale: float = 0.03
+    ang_scale: float = 0.4
+    in_tol: float = 2.0
     success: float = 50.0
-    drop: float = -20.0
-    violation: float = -20.0
+    drop: float = -10.0
+    violation: float = -10.0
     action: float = 0.002
     # pre-lift shaping only
-    approach: float = 2.0
-    lift: float = 5.0
+    approach: float = 1.0     # * exp(-dist / approach_scale)
+    approach_scale: float = 0.1
+    lift: float = 10.0
 
 
 @dataclass

@@ -130,6 +130,12 @@ palm origin and the object at that pose does not penetrate the palm or wrist wit
 fingers open. Reorient training starts with targets within 20 degrees and 1 cm of the
 lift pose and widens on success.
 
+**Reward.** Dense terms are bounded and positive: exp(-epos/3 cm) + exp(-eang/0.4 rad)
+after lift, exp(-dist/10 cm) before, plus bonuses for lift, tolerance, and the hold, and
+a one-off penalty for drops and violations. The first runs used negative per-step error
+penalties and the policies learned to end episodes early by pushing the object into the
+arm; with the per-step term negative, termination is the best action.
+
 **Success.** 1.5 cm and 15 degrees, then a 2 s hold with the arm targets frozen. Any
 non-hand contact after lift, or 0.25 s without hand contact, ends the episode as a
 failure. Hand-to-floor contact is allowed and logged.
