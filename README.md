@@ -7,27 +7,23 @@ reorient it in the hand and hold it for 2 s. xArm7 + LEAP hand in MuJoCo 3.13.
 One shape band, one start pose, measured end to end. The wider envelope is swept in eval only.
 Plans A, B and C in the repo share the same core but are not part of the submission.
 
-## Status
+## Results
 
-The reorient policy is still training (local run, 80 min, ends around 11:30 on 2026-09-14).
-The numbers below come from the scripted grasp, the hold-still baseline, and a 2M-step snapshot
-of the policy. Final 200-episode evals, videos and the PDF report follow once training finishes.
+Report: `report/report.pdf`. Policy and baseline run on the same 200 objects and targets (seeds 123-126).
 
-## Results so far
-
-| System | episodes | handover | success (95 % CI) | median e_pos / e_ang |
-|---|---|---|---|---|
-| scripted grasp alone | 480 | 266 (55 %) | - | - |
-| scripted grasp + hold still | 100 | - | 0 % (0-3.7) | 3.6 cm / 34 deg |
-| scripted grasp + learned reorient, 2M steps | 60 | - | 5 % (1.7-13.7) | 4.0 cm / 33 deg |
-| hold still, wide envelope grid | 105 | - | 1 % | 5.9 cm / 36 deg |
+| System | episodes | handover | success (95 % CI) | success given handover | median e_pos / e_ang |
+|---|---|---|---|---|---|
+| scripted grasp + hold still | 200 | 120 (60 %) | 0.5 % (0.1-2.8) | 0 / 120 | 3.6 cm / 35 deg |
+| scripted grasp + learned reorient | 200 | 120 (60 %) | **8.5 %** (5.4-13.2) | 16 / 120 | 3.3 cm / 25 deg |
+| learned reorient, wide envelope grid | 105 | 25 (24 %) | 1.9 % (0.5-6.7) | 1 / 25 | 5.2 cm / 37 deg |
 
 Success means e_pos <= 1.5 cm and e_ang <= 15 deg held for 2 s, with hand-only contact after lift.
-Hold-still is the baseline the policy has to beat: it shows how much of the target box the grasp
-already covers by luck (none of it).
+Below the 50 % bar. Hold-still shows how much of the target box the grasp covers by luck: none of it.
 
-Where episodes end, 2M-step policy: timeout out of tolerance 38 %, ground contact after lift 28 %
-(mostly the grasp popping the rod), drop 15 %, arm contact 12 %, success 5 %.
+Where policy episodes end: grasp pops the rod onto the floor 37.5 %, timeout out of tolerance 30 %,
+arm contact 12.5 %, in-hand drop 9.5 %, success 8.5 %. Arm contacts and drops are the policy's own
+(2 % and 4 % when holding still). Wide grid: only 4-5.5 cm lying rods get past the grasp; 2.4 cm
+rods never hand over, 7 cm rods pop.
 
 ## Scope and assumptions
 
@@ -54,7 +50,7 @@ so the policy trains on the poses it is actually deployed on. Only the fingers a
 scale, since the target is palm-frame and full-scale finger noise threw the rod out. All shaping is
 positive and bounded: with negative per-step error, ending the episode early was the best policy.
 
-**The grasp caps the system.** 45 % of episodes never reach reorientation. A learned,
+**The grasp caps the system.** 40 % of episodes never reach reorientation. A learned,
 value-aware grasp (plan A) is the change with the biggest expected gain.
 
 ## Setup
@@ -74,14 +70,22 @@ uv run python scripts/train.py reorient-teacher --fixed-targets --actor deploy \
     --bank checkpoints/handovers.npz --bank-frac 0.7 --envs 56 --workers 14 --minutes 80 --out checkpoints/local
 
 # 3. eval (same seeds give the same objects and targets for every system)
-uv run python eval.py s --episodes 100 --name s_hold
-bash scripts/eval_parallel.sh s_policy 4 50 s --reorient checkpoints/local/reorient_deploy.best.pt
-uv run python eval.py s --grid --wide --n-r 4 --n-h 5 --per-cell 3 --name s_grid_wide_hold
+SEED0=900 bash scripts/eval_parallel.sh val_best  4 30 s --reorient checkpoints/local/cand_best.pt   # checkpoint pick,
+SEED0=900 bash scripts/eval_parallel.sh val_final 4 30 s --reorient checkpoints/local/cand_final.pt  # held-out seeds
+cp checkpoints/local/cand_best.pt checkpoints/reorient_deploy.pt
+bash scripts/eval_parallel.sh s_hold   4 50 s
+bash scripts/eval_parallel.sh s_policy 4 50 s --reorient checkpoints/reorient_deploy.pt
+uv run python eval.py s --reorient checkpoints/reorient_deploy.pt --grid --wide --n-r 4 --n-h 5 --per-cell 3 --name s_grid_wide
 
-# 4. figures and videos
+# 4. figures, videos, report
 uv run python scripts/report_figs.py --policy results/s_policy.json --hold results/s_hold.json \
     --grid results/s_grid_wide.json --out report/figs
-uv run python scripts/record_video.py s --reorient checkpoints/local/reorient_deploy.best.pt --episodes 6
+uv run python scripts/record_video.py s --reorient checkpoints/reorient_deploy.pt --episodes 8 --seed 123
+uv run python scripts/record_video.py s --reorient checkpoints/reorient_deploy.pt --episodes 3 --seed 124 --want success
+uv run python scripts/record_video.py s --reorient checkpoints/reorient_deploy.pt --episodes 1 --seed 125 --want dropped
+uv run python scripts/record_video.py s --reorient checkpoints/reorient_deploy.pt --episodes 6 --seed 11 --wide
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --no-pdf-header-footer \
+    --print-to-pdf=report/report.pdf "file://$PWD/report/report.html"
 ```
 
 `eval.py` writes every episode (geometry, start pose, termination reason, the stage the system
@@ -100,7 +104,7 @@ inhand/planc/scripted_grasp.py  the grasp script
 inhand/systems.py               deployed systems; PlanS is the submission
 inhand/rl/                      PPO (asymmetric critic, GRU), DAgger, relabeling, curricula
 scripts/                        train, eval, eval_parallel, collect_handovers, report_figs, record_video
-report/report.html              report draft
+report/                         report.html -> report.pdf, figs/
 ```
 
 Train/deploy split: checkpoints carry `actor_key`. `load_actor(deploy_only=True)` refuses
@@ -115,9 +119,11 @@ to convergence, so no claims are made about them.
 
 ## Compute
 
-One laptop (Apple M5 Max, 18 cores), CPU MuJoCo. Reorient training runs at about 1.7k env
-steps/s with 14 worker processes, so roughly 8M steps in 80 min. Handover collection took about
-a minute on 5 processes. Delta jobs were queued as a second seed but never started in time.
+One laptop (Apple M5 Max, 18 cores), CPU MuJoCo, no GPU. Reorient training: 80 min, 7.55M env steps
+at about 1.57k steps/s on 14 worker processes. The submitted checkpoint is the 5.53M-step snapshot,
+picked over the final one on held-out seeds 900-903 (10.8 % vs 7.5 % end to end). Grasp sweeps
+about 25 min, handover collection about a minute, all evals about 5 min on 13 processes. Delta
+jobs were queued as a second seed but never started in time.
 
 ## References
 

@@ -1,10 +1,13 @@
 .venv/
 __pycache__/
 *.pyc
-checkpoints/
+# only the submitted checkpoint and its reset bank ship
+checkpoints/*
+!checkpoints/reorient_deploy.pt
+!checkpoints/handovers.npz
 ckpt_smoke/
-results/
-videos/
+results/*.log
+videos/*.log
 *.egg-info/
 .pytest_cache/
 wandb/
