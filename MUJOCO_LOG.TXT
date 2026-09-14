@@ -1,4 +1,0 @@
-WARNING Sun Sep 13 14:44:43 2026: Attach conflict when attaching 'leap_rh' to 'xarm7 nohand', policy is 'warning'
-impratio: parent has 1 (default), child has 100, keeping parent value
-cone: parent has 0 (default), child has 1, keeping parent value
-
