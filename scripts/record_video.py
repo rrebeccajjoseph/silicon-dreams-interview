@@ -14,7 +14,7 @@ from eval import build  # noqa: E402
 
 import argparse  # noqa: E402
 
-from inhand.config import Config  # noqa: E402
+from inhand.config import WIDE, Config  # noqa: E402
 from inhand.scene import Scene  # noqa: E402
 from inhand.tasks.monolithic import FullTaskEnv  # noqa: E402
 
@@ -56,26 +56,46 @@ def main():
     p.add_argument("--episodes", type=int, default=3)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument("--out", default="videos")
+    p.add_argument("--wide", action="store_true", help="sample objects from the WIDE envelope")
+    p.add_argument("--want", help="only save episodes ending this way (e.g. success, dropped, violation_arm)")
+    p.add_argument("--max-tries", type=int, default=60)
     args = p.parse_args()
     cfg = Config(seed=args.seed)
     scene = Scene(cfg)
-    env = FullTaskEnv(scene, cfg, seed=args.seed)
+    env = FullTaskEnv(scene, cfg, seed=args.seed, envelope=WIDE if args.wide else None)
     system = build(args, scene, cfg)
     renderer = mujoco.Renderer(env.m, 480, 640)
     Path(args.out).mkdir(exist_ok=True)
-    for i in range(args.episodes):
-        obs = env.reset()
-        system.reset()
-        frames = [frame(env, renderer)]
-        while True:
-            obs, _, done, info = env.step(system.act(obs["deploy"]))
-            frames.append(frame(env, renderer))
-            if done:
-                break
-        name = f"plan{args.plan}_{i}_alpha{env.obj.alpha:.1f}_{env.ep.start_pose}_{info['reason']}.mp4"
+    saved = tried = 0
+    while saved < args.episodes and tried < args.max_tries:
+        # episodes are deterministic given the env RNG, so a matching one can be replayed with rendering
+        rng_state = env.rng.bit_generator.state
+        if args.want:
+            info = rollout(env, system)
+            tried += 1
+            if not (info["reason"] == args.want or (args.want == "success" and info["success"])):
+                continue
+            env.rng.bit_generator.state = rng_state
+        frames = []
+        info = rollout(env, system, lambda: frames.append(frame(env, renderer)))
+        tried += 0 if args.want else 1
+        name = f"plan{args.plan}_s{args.seed}_{saved}_d{200 * env.obj.r:.1f}cm_h{100 * env.obj.h:.0f}cm_alpha{env.obj.alpha:.1f}_{env.ep.start_pose}_{info['reason']}.mp4"
         imageio.mimwrite(Path(args.out) / name, np.stack(frames), fps=int(cfg.control.ctrl_hz))
-        print("wrote", name)
+        saved += 1
+        print("wrote", name, flush=True)
 
+
+def rollout(env: FullTaskEnv, system, on_frame=None) -> dict:
+    obs = env.reset()
+    system.reset()
+    if on_frame:
+        on_frame()
+    while True:
+        obs, _, done, info = env.step(system.act(obs["deploy"]))
+        if on_frame:
+            on_frame()
+        if done:
+            return info
 
 if __name__ == "__main__":
     main()

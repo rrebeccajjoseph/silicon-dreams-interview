@@ -6,7 +6,7 @@ set -euo pipefail
 NAME=$1; PROCS=$2; EPS=$3; shift 3
 parts=()
 for i in $(seq 0 $((PROCS - 1))); do
-  uv run python scripts/eval.py "$@" --episodes "$EPS" --seed $((123 + i)) --name "${NAME}_part$i" > "results/${NAME}_part$i.log" 2>&1 &
+  uv run python scripts/eval.py "$@" --episodes "$EPS" --seed $((${SEED0:-123} + i)) --name "${NAME}_part$i" > "results/${NAME}_part$i.log" 2>&1 &
   parts+=("${NAME}_part$i")
 done
 wait
