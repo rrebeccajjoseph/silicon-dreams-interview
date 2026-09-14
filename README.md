@@ -12,6 +12,19 @@ core so they can be compared with the same evaluator.
 
 Robot: xArm7 + LEAP right hand (MuJoCo Menagerie, vendored in `assets/`). MuJoCo 3.13, PyTorch, custom PPO.
 
+## Deliverables
+
+| Take-home item | Where |
+|---|---|
+| env, training, eval code | `inhand/`, `scripts/train.py` |
+| single eval entry point | `eval.py` |
+| checkpoints | `checkpoints/` (from the Delta run, not committed yet) |
+| assumptions, decomposition, MDPs | below |
+| grasp-stage trade-off (4.2) | `eval.py c` scripted vs `eval.py c --grasp` learned, and plan A vs B |
+| envelope (5) and failure taxonomy | `results/plan_<x>.json` from `eval.py --grid` |
+| videos | `scripts/record_video.py` -> `videos/` |
+| compute budget | below |
+
 ## Setup
 
 ```bash
@@ -32,11 +45,11 @@ uv run python scripts/train.py distill  --teacher checkpoints/grasp_a_teacher.pt
 uv run python scripts/train.py distill  --teacher checkpoints/skills_c_teacher.pt --env prims    --name skills_c_student --minutes 15
 uv run python scripts/train.py estimator-c --policy checkpoints/skills_c_student.pt --minutes 10
 
-uv run python scripts/eval.py a --grasp checkpoints/grasp_a_student.pt --reorient checkpoints/reorient_student.pt --grid
-uv run python scripts/eval.py b --policy checkpoints/mono_b.pt --grid
-uv run python scripts/eval.py c --skills checkpoints/skills_c_student.pt --estimator checkpoints/estimator_c.pt --grid
-uv run python scripts/eval.py c ... --grasp checkpoints/grasp_a_student.pt   # C with A's grasp
-uv run python scripts/eval.py random --grid
+uv run python eval.py a --grasp checkpoints/grasp_a_student.pt --reorient checkpoints/reorient_student.pt --grid
+uv run python eval.py b --policy checkpoints/mono_b.pt --grid
+uv run python eval.py c --skills checkpoints/skills_c_student.pt --estimator checkpoints/estimator_c.pt --grid
+uv run python eval.py c ... --grasp checkpoints/grasp_a_student.pt   # C with A's grasp
+uv run python eval.py random --grid
 uv run python scripts/record_video.py a|b|c ... --episodes 4
 ```
 
