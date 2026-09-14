@@ -1,169 +1,112 @@
 # In-hand cylinder reorientation with a delayed target
 
-Pick a cylinder of unknown aspect ratio off the ground, lift it, and only then learn
-the commanded palm-frame pose. Reorient in hand and hold. Three decompositions share
-one simulator core and one evaluation harness so they can be compared on equal terms.
+Pick a cylinder of random aspect ratio off the ground, lift it, receive a palm-frame
+target only after lift, reorient in hand, hold 2 s. Three decompositions on one MuJoCo
+core so they can be compared with the same evaluator.
 
-| Plan | Grasp | Reorient | The RL idea it leans on |
+| Plan | Grasp | Reorient | Idea |
 |---|---|---|---|
-| A | learned, rewarded by the reorient critic | learned, teacher-student | option value: the grasp maximises E over the target prior of V_reorient at lift |
-| B | one recurrent policy | same policy | hindsight relabeling is exact before lift; the critic sees the target the actor cannot |
-| C | scripted IK + extrinsic tip-over | primitive skills + planner + tactile estimator | semi-MDP over learned options, explicit state estimation |
+| A | learned, reward = reorient critic's value averaged over the target prior | teacher-student PPO | grasp maximises E[V] since T* is unknown at grasp time |
+| B | one recurrent policy, target masked until lift | same policy | hindsight relabeling is exact pre-lift; critic sees T* throughout |
+| C | scripted IK + tip-over | 11 learned primitives + planner + tactile GRU estimator | options over an SMDP, explicit estimation |
 
-Robot: UFactory xArm7 with a LEAP right hand (MuJoCo Menagerie). Simulator: MuJoCo 3.13.
+Robot: xArm7 + LEAP right hand (MuJoCo Menagerie, vendored in `assets/`). MuJoCo 3.13, PyTorch, custom PPO.
 
 ## Setup
 
 ```bash
-uv sync                                   # python 3.12, mujoco, torch, numpy, imageio
-uv run pytest -q                          # 10 tests, ~2 s
+uv sync && uv run pytest -q
 ```
 
-Robot assets are a sparse checkout of `google-deepmind/mujoco_menagerie` under
-`assets/menagerie` (`leap_hand`, `ufactory_xarm7`). Re-fetch with:
+## Commands run
 
 ```bash
-git clone --filter=blob:none --sparse https://github.com/google-deepmind/mujoco_menagerie assets/menagerie
-cd assets/menagerie && git sparse-checkout set leap_hand ufactory_xarm7
+# laptop smoke (2 iters each) and the cluster matrix (scripts/remote/delta_submit.sh, one GPU share per job, time-boxed)
+uv run python scripts/train.py reorient-teacher --envs 64 --workers 16 --minutes 45 --wandb
+uv run python scripts/train.py skills-c         --envs 64 --workers 16 --minutes 35 --wandb
+uv run python scripts/train.py mono-b           --envs 64 --workers 16 --minutes 80 --wandb
+uv run python scripts/train.py mono-b --no-relabel ... --out checkpoints/ablation
+uv run python scripts/train.py grasp-a  --critic checkpoints/reorient_teacher.pt --minutes 30
+uv run python scripts/train.py distill  --teacher checkpoints/reorient_teacher.pt --env reorient --name reorient_student --minutes 15
+uv run python scripts/train.py distill  --teacher checkpoints/grasp_a_teacher.pt  --env grasp    --name grasp_a_student  --minutes 15
+uv run python scripts/train.py distill  --teacher checkpoints/skills_c_teacher.pt --env prims    --name skills_c_student --minutes 15
+uv run python scripts/train.py estimator-c --policy checkpoints/skills_c_student.pt --minutes 10
+
+uv run python scripts/eval.py a --grasp checkpoints/grasp_a_student.pt --reorient checkpoints/reorient_student.pt --grid
+uv run python scripts/eval.py b --policy checkpoints/mono_b.pt --grid
+uv run python scripts/eval.py c --skills checkpoints/skills_c_student.pt --estimator checkpoints/estimator_c.pt --grid
+uv run python scripts/eval.py c ... --grasp checkpoints/grasp_a_student.pt   # C with A's grasp
+uv run python scripts/eval.py random --grid
+uv run python scripts/record_video.py a|b|c ... --episodes 4
 ```
+
+`eval.py` writes `results/plan_<x>.json`: every episode, success rate, error percentiles,
+failure taxonomy with pre/post-lift attribution, success by aspect-ratio bin and start pose.
+W&B: `ftn-ebm-lab/cylinder-reorient-rl`.
 
 ## Layout
 
 ```
-inhand/
-  config.py          every declared assumption: envelope, sensors, rates, tolerances, rewards
-  scene.py           xArm7 + LEAP + cylinder + floor; palm frame; home and palm-up keyframes
-  cylinder.py        object sampling, mass/inertia, stable start poses, surface points
-  frames.py          palm-frame transforms, sign-invariant axis encoding, error metrics
-  contacts.py        contact taxonomy, tactile pads, camera-visibility gate
-  observations.py    DEPLOY (ships) and PRIV (critics and teachers) layouts
-  env.py             episode logic: lift detector, target reveal, hold phase, pure reward fn
-  vec.py             threaded vector env
-  tasks/             reorient (shared), grasp_value (A), monolithic (B), primitives (C)
-  rl/                PPO with asymmetric critic, GRU actor, hindsight relabeling, DAgger, curricula
-  planc/             estimator, planner, scripted grasp
-  systems.py         the three deployed systems; they read DEPLOY vectors and nothing else
-scripts/
-  train.py           one subcommand per learned component
-  eval.py            full task, envelope sweep, failure taxonomy with per-stage attribution
-  record_video.py    mp4 clips
+inhand/config.py        all declared assumptions (below)
+inhand/scene.py         arm + hand + cylinder, palm frame, keyframes
+inhand/cylinder.py      object sampling, stable start poses
+inhand/frames.py        palm-frame math, sign-invariant axis encoding, metrics
+inhand/contacts.py      contact taxonomy, tactile pads, visibility gate
+inhand/observations.py  DEPLOY (ships) vs PRIV (critics/teachers) layouts
+inhand/env.py           lift detector, target reveal, hold phase, reward
+inhand/vec.py           thread and subprocess vector envs
+inhand/tasks/           reorient (shared), grasp_value (A), monolithic (B), primitives (C)
+inhand/rl/              PPO (asymmetric critic, GRU), relabeling, DAgger, curricula
+inhand/planc/           estimator, planner, scripted grasp
+inhand/systems.py       deployed systems; DEPLOY input only, stage switch = target flag
+scripts/                train.py, eval.py, record_video.py, remote/ (cluster)
 ```
 
-The train/deploy split is enforced in code: `Actor` checkpoints carry an `actor_key`,
-and `load_actor(..., deploy_only=True)` refuses privileged teachers. `systems.py`
-asserts every deployed actor's input width equals `DEPLOY.dim`.
+Train/deploy split: checkpoints carry `actor_key`; `load_actor(deploy_only=True)` refuses
+privileged teachers; `systems.py` asserts input width == `DEPLOY.dim`.
 
-## Commands
+## Decomposition and interfaces
 
-Everything below was run for a two-iteration smoke test on a laptop. On the cluster the
-same commands run with `--workers 64 --minutes <budget>`; see `scripts/remote/`.
+- Stage switch: the world sets the target-available flag at the lift instant; every system switches on that flag.
+- Lift: object touches at least one hand geom and nothing else, checked at the control rate.
+- A: grasp episode ends 10 steps after a stable lift; terminal reward = mean over 16 sampled T* of the privileged reorient critic.
+- B: deploy target block is zeros pre-lift; critic reads `true_target` always; rollouts ending in-hand are relabeled with their final pose, rewards recomputed through the pure `reward_fn`.
+- C: scripted grasp -> 60-step wrist roll to palm-up -> planner picks a primitive every 30 steps from the estimator's pose using nominal primitive effects (depth-3 search).
 
-```bash
-# shared: privileged reorient teacher (plans A and C reuse its critic / structure)
-uv run python scripts/train.py reorient-teacher --envs 64 --iters 1500 --out checkpoints
-uv run python scripts/train.py distill --teacher checkpoints/reorient_teacher.pt --env reorient --name reorient_student --iters 200
+## MDPs
 
-# plan A
-uv run python scripts/train.py grasp-a --critic checkpoints/reorient_teacher.pt --envs 64 --iters 800
-uv run python scripts/train.py distill --teacher checkpoints/grasp_a_teacher.pt --env grasp --name grasp_a_student --iters 200
-uv run python scripts/eval.py a --grasp checkpoints/grasp_a_student.pt --reorient checkpoints/reorient_student.pt --grid
-
-# plan B (add --no-relabel for the ablation)
-uv run python scripts/train.py mono-b --envs 64 --iters 3000
-uv run python scripts/eval.py b --policy checkpoints/mono_b.pt --grid
-
-# plan C
-uv run python scripts/train.py skills-c --envs 64 --iters 800
-uv run python scripts/train.py distill --teacher checkpoints/skills_c_teacher.pt --env prims --name skills_c_student --iters 200
-uv run python scripts/train.py estimator-c --policy checkpoints/skills_c_student.pt --iters 100
-uv run python scripts/eval.py c --skills checkpoints/skills_c_student.pt --estimator checkpoints/estimator_c.pt --grid
-uv run python scripts/eval.py c ... --grasp checkpoints/grasp_a_student.pt     # C with A's learned grasp
-
-# baseline and clips
-uv run python scripts/eval.py random --grid
-uv run python scripts/record_video.py a --grasp ... --reorient ... --episodes 5
-```
-
-`eval.py` writes `results/plan_<x>.json` with every episode and prints success rate,
-error percentiles over lifted episodes, the failure taxonomy, pre/post-lift attribution,
-and success by aspect-ratio bin and start pose.
+Obs (deploy): arm/hand q, dq, previous action, targets, 5 tactile pads x (contact, normal force, centroid), palm pose from kinematics, gated vision (pos, axis outer product, r, h, flag), target (pos, axis outer, flag), skill one-hot, time.
+Obs (privileged, train only): all of the above + object pose/velocity in palm frame, r, h, mass, frictions, contact flags, true target, lifted.
+Action: 23 delta joint-position targets in [-1, 1], arm 0.04 rad/step, hand 0.25 rad/step.
+Reward: post-lift exp(-epos/3cm) + exp(-eang/0.4rad) + 2·in_tol + 50·success; pre-lift 0.1·exp(-dist/10cm) + 30·lift; -10 drop or violation; small action penalty.
+Termination: success, non-hand contact after lift, 0.25 s without hand contact, object >0.5 m away, horizon.
+Curricula: envelope widens (ADR) and target offset widens on 60 % success over 200 episodes.
 
 ## Assumptions
 
-Everything here is a field in `inhand/config.py` unless noted.
+- Palm frame: origin on the palm face under the fingers, x to fingertips, y across fingers, z outward normal. Hand on a 40 mm bracket past the flange (without it long rods hit the wrist link).
+- Envelope G: r 1.2-3.5 cm, h 2-16 cm independent (alpha 0.3-6.7); finger span ~9 cm, reach ~12 cm. Density 300-1200 kg/m3. Friction: object 0.5-1.2, ground 0.4-1.0. Standing starts for alpha <= 3, lying for alpha >= 0.15. Start position x 0.36-0.56 m, y +-0.14 m.
+- Tactile: 4 fingertips + palm; contact flag, summed normal force, force-weighted centroid in pad frame; control rate; noiseless; all contacts count.
+- Vision stand-in: ground-truth pose + (r, h) only when >= 30 % of 32 surface samples are unoccluded from any of two fixed cameras at (1.1, +-0.7, 0.9) m or a wrist camera, ray-cast at 5 Hz; otherwise last value with flag 0.
+- Control: 4 ms physics, 25 Hz policy, Menagerie position actuators, no latency. Elliptic cones, impratio 100, implicit-fast, cylinder condim 4.
+- T*: axis uniform on the sphere; position x -2..5 cm, y +-3 cm, z from palm clearance to +2 cm; feasible if within 8 cm of the palm origin and no palm/wrist penetration with fingers open.
+- Success: 1.5 cm, 15 deg, 2 s hold with arm targets frozen. Hand-floor contact allowed and logged.
+- Estimator (C): GRU on the deploy stream with the target zeroed, outputs pose + (r, h); trained supervised on skill rollouts.
 
-**Palm frame.** Site `palm_frame` on the LEAP palm body: origin on the palm face under
-the fingers, x toward the fingertips, y across the fingers, z the outward palm normal.
-The hand sits on a 40 mm bracket beyond the xArm7 flange, like a real LEAP mount; without
-it, long rods lying across the palm touch the wrist link and every episode fails.
+## Compute
 
-**Envelope G.** Radius 1.2 to 3.5 cm, height 2 to 16 cm, sampled independently, so
-aspect ratio spans about 0.3 to 6.7. Finger span across index to ring is about 9 cm and
-fingertip reach about 12 cm. Density 300 to 1200 kg/m3. Object friction 0.5 to 1.2, ground
-0.4 to 1.0. Standing starts are sampled only for alpha <= 3, lying starts only for
-alpha >= 0.15. Position uniform in x 0.36 to 0.56 m, y -0.14 to 0.14 m from the arm base.
+CPU MuJoCo, ~520 env-steps/s per job with 64 envs across 16 worker processes on a Delta
+A100 node share. Matrix: 10 dependent Slurm jobs, ~3 h end to end, ~8 GPU-hours.
 
-**Tactile.** Five pads: four fingertips and the palm. Each reports a contact flag, summed
-normal force, and the force-weighted contact centroid in the pad body frame, at the
-control rate. All contacts count, not only the object. This is a uSkin-class patch with
-centroid extraction, assumed noiseless.
+## Status and known failures
 
-**Vision stand-in.** Ground-truth palm-frame pose plus radius and height are exposed
-only when at least 30 percent of 32 area-weighted surface samples are unoccluded from
-one of three cameras: two fixed at (1.1, +-0.7, 0.9) m and a wrist camera on a bracket
-behind the palm. Occlusion is a ray cast against the full scene, refreshed at 5 Hz. When gated off, the
-last visible estimate is passed with a zero flag.
-
-**Control.** 4 ms physics, 25 Hz policy (10 substeps), delta joint-position targets
-clipped to the URDF ranges (arm 0.04 rad per step, hand 0.25 rad per step). 2 ms was
-checked to behave the same and is 1.65x slower. Position actuators as
-shipped in Menagerie. No latency modeled. Contact: elliptic cones, impratio 100,
-implicit-fast integrator, cylinder with condim 4.
-
-**Lift detector.** Evaluated at each control step: the object touches at least one hand
-geom and nothing else. That instant unhides the target. A momentary bounce during a
-squeeze counts as lift, so a grasp that lets the object touch down again is a violation.
-
-**Target T*.** Axis uniform on the sphere; position with x in -2 to 5 cm, y in -3 to 3 cm,
-and z between just-clearing-the-palm and 2 cm above that. Feasible if within 8 cm of the
-palm origin and the object at that pose does not penetrate the palm or wrist with the
-fingers open. Reorient training starts with targets within 20 degrees and 1 cm of the
-lift pose and widens on success.
-
-**Reward.** Dense terms are bounded and positive: exp(-epos/3 cm) + exp(-eang/0.4 rad)
-after lift, exp(-dist/10 cm) before, plus bonuses for lift, tolerance, and the hold, and
-a one-off penalty for drops and violations. The first runs used negative per-step error
-penalties and the policies learned to end episodes early by pushing the object into the
-arm; with the per-step term negative, termination is the best action.
-
-**Success.** 1.5 cm and 15 degrees, then a 2 s hold with the arm targets frozen. Any
-non-hand contact after lift, or 0.25 s without hand contact, ends the episode as a
-failure. Hand-to-floor contact is allowed and logged.
-
-**Compute.** CPU MuJoCo. The in-hand stage is contact-rich and runs about 700
-env-steps/s on 8 laptop cores; on Delta one A100 node share (16 EPYC cores) gave about
-285 env-steps/s with 16 worker processes and the 2 ms step. The cluster script
-(`scripts/remote/delta_submit.sh`) takes whole 64-core nodes and time-boxes each stage
-with `--minutes`; the default schedule is a 3 hour end-to-end run, and `scale` stretches
-it. Every stage logs to W&B project `cylinder-reorient-rl`.
-
-## Status
-
-- The simulator core, the three decompositions, training, evaluation, and video are
-  implemented and smoke-tested end to end. Checkpoints in this repo are two-iteration
-  smoke artifacts, not trained policies.
-- The plan C scripted grasp lifts about one lying cylinder in three (measured on a
-  3 x 3 grid). Its main failure is the lift-then-touch-down bounce described above. This
-  is the baseline plans A and B are meant to beat.
-- Known gaps: no standing-disk grasp in the scripted controller; in-hand resets bias
-  toward poses that rest on the upturned palm; timeouts are treated as terminal in GAE.
+- Reward sign matters: negative per-step error made early termination optimal (97 % arm contacts); positive bounded shaping fixed it. An approach reward of 1/step made the plan B policy hover instead of lift; 0.1/step with a 30 lift bonus fixed that.
+- Scripted grasp (C) lifts ~1 in 3 lying cylinders; failure = squeeze bounce that counts as lift then ground contact.
+- No standing-disk scripted grasp; in-hand resets bias toward poses resting on the palm; timeouts terminal in GAE.
+- Next: longer budgets (curricula never advanced in 45 min), MJX port for 100x envs, learned grasp for C.
 
 ## References
 
-- MuJoCo Menagerie: LEAP hand and xArm7 models.
-- Chen et al., Visual Dexterity (2023); Handa et al., DeXtreme (2023): teacher-student
-  and domain randomization for in-hand reorientation.
-- Andrychowicz et al., Hindsight Experience Replay (2017).
-- Pinto et al., Asymmetric Actor Critic (2017).
-- Ross et al., DAgger (2011).
-- Sutton et al., Options framework (1999).
+MuJoCo Menagerie (LEAP, xArm7). Chen et al. Visual Dexterity 2023; Handa et al. DeXtreme 2023;
+Andrychowicz et al. HER 2017; Pinto et al. Asymmetric Actor Critic 2017; Ross et al. DAgger 2011;
+Sutton et al. Options 1999.
