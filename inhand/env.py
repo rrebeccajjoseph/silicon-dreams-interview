@@ -69,7 +69,7 @@ class CylinderEnv:
 
     def __init__(self, scene: Scene, cfg: Config, mode: str = "ground", seed: int = 0,
                  envelope: Envelope | None = None, curriculum: tuple[float, float] | None = None,
-                 horizon_s: float | None = None):
+                 horizon_s: float | None = None, bank_path: str | None = None, bank_frac: float = 0.0):
         self.scene = scene
         self.cfg = cfg
         self.ids = scene.ids
@@ -94,13 +94,31 @@ class CylinderEnv:
         self.target_a = np.array([0.0, 0.0, 1.0])
         self.skill = np.zeros(12, dtype=np.float32)
         self.ep = EpisodeState()
+        # saved handover states from the scripted grasp; in-hand resets draw from them bank_frac of the time
+        self.bank = dict(np.load(bank_path)) if bank_path else None
+        self.bank_frac = bank_frac
 
     # ---------------------------------------------------------------- reset
     def reset(self, obj: ObjectParams | None = None, start_pose: str | None = None) -> dict:
         self.ep = EpisodeState()
         self.prev_action[:] = 0
         attempt = 0
-        while True:
+        use_bank = self.mode == "inhand" and self.bank is not None and obj is None and self.rng.random() < self.bank_frac
+        while use_bank:
+            i = self.rng.integers(len(self.bank["qpos"]))
+            self.obj = ObjectParams(*[float(v) for v in self.bank["obj"][i]])
+            apply_object(self.m, self.ids, self.obj)
+            self.pts_obj = cylinder_surface_points(self.obj.r, self.obj.h, self.cfg.sensors.n_surface_pts, self.rng)
+            mujoco.mj_resetData(self.m, self.d)
+            self.d.qpos[:] = self.bank["qpos"][i]
+            self.d.qvel[:] = self.bank["qvel"][i]
+            self.targets[:] = self.bank["targets"][i]
+            self.d.ctrl[:] = self.targets
+            mujoco.mj_forward(self.m, self.d)
+            self.ep.start_pose = "handover"
+            if classify(self.m, self.d, self.ids).hand_only:
+                break
+        while not use_bank:
             # a few shapes refuse to seat in the hand; resample the object every few tries
             # (a pinned object is released after 40 failures rather than crashing a worker)
             if attempt % 10 == 0:
@@ -147,8 +165,9 @@ class CylinderEnv:
         self._set_arm(self.scene.q_hold)
         mujoco.mj_forward(self.m, self.d)
         p_palm, R_palm = self.palm_pose()
-        a = frames.random_unit(self.rng)
-        p = np.array([self.rng.uniform(-0.01, 0.04), self.rng.uniform(-0.03, 0.03),
+        # roughly what the scripted grasp hands over: across the fingers, but loosely placed
+        a = frames.perturb_axis(np.array(self.cfg.targets.axis_nominal), np.deg2rad(60.0), self.rng)
+        p = np.array([self.rng.uniform(-0.05, 0.04), self.rng.uniform(-0.03, 0.03),
                       frames.z_clearance(a, self.obj.r, self.obj.h) + self.rng.uniform(0.002, 0.01)])
         self._set_obj_world(p_palm + R_palm @ p, quat_from_z_to(R_palm @ a))
         self.ep.start_pose = "inhand"
@@ -174,9 +193,9 @@ class CylinderEnv:
                 p = ref[0] + frames.random_unit(self.rng) * self.rng.uniform(0, dist)
                 p[2] = max(p[2], frames.z_clearance(a, r, h) + 0.002)
             else:
-                a = frames.random_unit(self.rng)
+                a = frames.perturb_axis(np.array(tg.axis_nominal), tg.axis_cone, self.rng)
                 z0 = frames.z_clearance(a, r, h)
-                p = np.array([self.rng.uniform(-0.02, 0.05), self.rng.uniform(-0.03, 0.03),
+                p = np.array([self.rng.uniform(*tg.x_range), self.rng.uniform(*tg.y_range),
                               z0 + self.rng.uniform(0.002, tg.z_clear_max)])
             if np.linalg.norm(p) > tg.max_radius or self._penetrates_palm(p, a):
                 continue

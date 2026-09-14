@@ -108,6 +108,12 @@ def run_ppo(args, env_cls, kwargs_fn, name: str, actor_key: str, recurrent: bool
 
 def cmd_reorient_teacher(args):
     cfg = Config()
+    if args.fixed_targets:
+        # train on the deployed target distribution directly; the deploy actor needs no distill step
+        name = "reorient_teacher" if args.actor == "priv" else "reorient_deploy"
+        kw = dict(bank_path=args.bank, bank_frac=args.bank_frac) if args.bank else {}
+        run_ppo(args, ReorientEnv, lambda i: kw, name, actor_key=args.actor, recurrent=args.actor == "deploy")
+        return
     run_ppo(args, ReorientEnv, lambda i: {}, "reorient_teacher", actor_key="priv", recurrent=False,
             adr=EnvelopeADR(cfg.envelope), tcur=TargetCurriculum(cfg.targets.ang_curriculum, cfg.targets.pos_curriculum))
 
@@ -196,6 +202,10 @@ def main():
     p.add_argument("cmd", choices=["reorient-teacher", "grasp-a", "mono-b", "skills-c", "distill", "estimator-c"])
     p.add_argument("--critic", help="grasp-a: reorient teacher checkpoint (its critic is used)")
     p.add_argument("--value-scale", type=float, default=1.0)
+    p.add_argument("--actor", choices=["priv", "deploy"], default="priv", help="reorient-teacher --fixed-targets")
+    p.add_argument("--fixed-targets", action="store_true", help="reorient-teacher: no curricula, deployed target prior")
+    p.add_argument("--bank", help="handover states from scripts/collect_handovers.py for in-hand resets")
+    p.add_argument("--bank-frac", type=float, default=0.7)
     p.add_argument("--no-relabel", action="store_true", help="mono-b ablation")
     p.add_argument("--teacher", help="distill: privileged teacher checkpoint")
     p.add_argument("--policy", help="estimator-c: policy used to generate data")

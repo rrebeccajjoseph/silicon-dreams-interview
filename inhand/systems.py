@@ -15,6 +15,7 @@ from .rl.nets import Actor
 from .rl.ppo import load_actor
 from .scene import Scene
 from .tasks.primitives import HOLD, SKILL_DIM
+from .tasks.reorient import ACTION_SCALE
 
 
 def target_available(obs: np.ndarray) -> bool:
@@ -128,3 +129,42 @@ class PlanC(System):
         o[DEPLOY["skill"]] = np.eye(SKILL_DIM, dtype=np.float32)[self.skill]
         # the skill was trained on its own local target, which is the nominal effect
         return self.skills.act(o)
+
+
+class PlanS(System):
+    """Scripted grasp, then one learned reorient policy once the palm-up roll has arrived.
+    Without a checkpoint the hand holds still after handover: the baseline the policy must beat."""
+    name = "S"
+
+    def __init__(self, scene: Scene, cfg: Config, reorient_ckpt: str | None = None,
+                 reorient_horizon_s: float = 10.0, handover_timeout: int = 200):
+        self.grasp = ScriptedGrasp(scene, cfg)
+        self.reorient = ActorRunner(load_actor(reorient_ckpt, deploy_only=True)) if reorient_ckpt else None
+        self.q_hold = scene.q_hold
+        self.horizon = reorient_horizon_s * cfg.control.ctrl_hz
+        self.handover_timeout = handover_timeout
+
+    def reset(self) -> None:
+        self.grasp.reset()
+        if self.reorient:
+            self.reorient.reset()
+        self.stage = "grasp"
+        self.since_lift = 0
+        self.since_handover = 0
+
+    def act(self, obs: np.ndarray) -> np.ndarray:
+        if self.stage == "grasp":
+            a = self.grasp.act(obs)
+            if target_available(obs):
+                self.since_lift += 1
+                arrived = self.grasp.phase == "roll" and np.abs(obs[DEPLOY["arm_q"]] - self.q_hold).max() < 0.03
+                if arrived or self.since_lift > self.handover_timeout:
+                    self.stage = "reorient"
+            return a
+        self.since_handover += 1
+        if self.reorient is None:
+            return np.zeros(len(self.q_hold) + 16)
+        # the policy was trained with time measured from its own episode start
+        o = obs.copy()
+        o[DEPLOY["time"]] = min(1.0, self.since_handover / self.horizon)
+        return np.clip(self.reorient.act(o), -1, 1) * ACTION_SCALE
