@@ -25,5 +25,6 @@ filterwarnings = ["ignore::UserWarning"]
 
 [dependency-groups]
 dev = [
+    "matplotlib>=3.11.2",
     "ruff>=0.16.7",
 ]

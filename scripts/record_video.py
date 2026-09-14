@@ -19,9 +19,38 @@ from inhand.scene import Scene  # noqa: E402
 from inhand.tasks.monolithic import FullTaskEnv  # noqa: E402
 
 
+def ghost_target(env: FullTaskEnv, scene: mujoco.MjvScene) -> None:
+    """Translucent green cylinder at T*, drawn only once the target has been revealed."""
+    if not env.ep.lifted or scene.ngeom >= scene.maxgeom:
+        return
+    p_palm, R_palm = env.palm_pose()
+    z = R_palm @ env.target_a
+    x = np.cross(z, [1.0, 0, 0] if abs(z[0]) < 0.9 else [0, 1.0, 0])
+    x /= np.linalg.norm(x)
+    mat = np.stack([x, np.cross(z, x), z], axis=1)
+    mujoco.mjv_initGeom(scene.geoms[scene.ngeom], mujoco.mjtGeom.mjGEOM_CYLINDER,
+                        np.array([env.obj.r, env.obj.h / 2, 0]), p_palm + R_palm @ env.target_p,
+                        mat.ravel(), np.array([0.1, 0.8, 0.3, 0.35], dtype=np.float32))
+    scene.ngeom += 1
+
+
+def frame(env: FullTaskEnv, renderer: mujoco.Renderer) -> np.ndarray:
+    """Workspace view next to a close-up that follows the palm."""
+    renderer.update_scene(env.d, camera="video")
+    ghost_target(env, renderer.scene)
+    wide = renderer.render()
+    cam = mujoco.MjvCamera()
+    cam.type = mujoco.mjtCamera.mjCAMERA_FREE
+    cam.lookat[:] = env.palm_pose()[0] if env.ep.lifted else env.obj_pos_w
+    cam.distance, cam.azimuth, cam.elevation = 0.35, -45.0, -45.0
+    renderer.update_scene(env.d, camera=cam)
+    ghost_target(env, renderer.scene)
+    return np.concatenate([wide, renderer.render()], axis=1)
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("plan", choices=["a", "b", "c", "random"])
+    p.add_argument("plan", choices=["a", "b", "c", "s", "random"])
     p.add_argument("--grasp"); p.add_argument("--reorient"); p.add_argument("--policy")
     p.add_argument("--skills"); p.add_argument("--estimator")
     p.add_argument("--episodes", type=int, default=3)
@@ -37,10 +66,10 @@ def main():
     for i in range(args.episodes):
         obs = env.reset()
         system.reset()
-        frames = [env.render(renderer)]
+        frames = [frame(env, renderer)]
         while True:
             obs, _, done, info = env.step(system.act(obs["deploy"]))
-            frames.append(env.render(renderer))
+            frames.append(frame(env, renderer))
             if done:
                 break
         name = f"plan{args.plan}_{i}_alpha{env.obj.alpha:.1f}_{env.ep.start_pose}_{info['reason']}.mp4"

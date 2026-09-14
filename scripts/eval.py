@@ -4,6 +4,8 @@
   python scripts/eval.py b --policy ckpt/mono_b.pt
   python scripts/eval.py c --skills ckpt/skills_c_student.pt --estimator ckpt/estimator_c.pt
   python scripts/eval.py c ... --grasp ckpt/grasp_a_student.pt     # C with A's learned grasp
+  python scripts/eval.py s --reorient ckpt/reorient_deploy.pt   # scripted grasp + learned reorient
+  python scripts/eval.py s               # scripted grasp, then hold still (baseline)
   python scripts/eval.py random          # sanity baseline
 
 Writes results/<plan>.json with every episode and prints the envelope table."""
@@ -19,13 +21,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from inhand.config import Config  # noqa: E402
+from inhand.config import WIDE, Config  # noqa: E402
 from inhand.cylinder import ObjectParams, allowed_start_poses  # noqa: E402
 from inhand.scene import Scene  # noqa: E402
-from inhand.systems import PlanA, PlanB, PlanC, System  # noqa: E402
+from inhand.systems import PlanA, PlanB, PlanC, PlanS, System  # noqa: E402
 from inhand.tasks.monolithic import FullTaskEnv  # noqa: E402
 
-PRE_LIFT = {"never_lifted", "obj_lost"}
 
 
 class RandomSystem(System):
@@ -45,6 +46,8 @@ def build(args, scene, cfg) -> System:
         return PlanB(args.policy)
     if args.plan == "c":
         return PlanC(scene, cfg, args.skills, args.estimator, grasp_ckpt=args.grasp)
+    if args.plan == "s":
+        return PlanS(scene, cfg, args.reorient)
     return RandomSystem(args.seed)
 
 
@@ -56,7 +59,7 @@ def run_episode(env: FullTaskEnv, system: System, obj: ObjectParams | None, pose
         obs, _, done, info = env.step(system.act(obs["deploy"]))
         if done:
             break
-    stage = "pre_lift" if info["reason"] in PRE_LIFT else "post_lift"
+    stage = "pre_lift" if env.ep.lift_step < 0 else "post_lift"
     return {
         "r": env.obj.r, "h": env.obj.h, "alpha": env.obj.alpha, "mass": env.obj.mass,
         "start_pose": env.ep.start_pose, "success": bool(info["success"]), "reason": info["reason"],
@@ -66,8 +69,8 @@ def run_episode(env: FullTaskEnv, system: System, obj: ObjectParams | None, pose
     }
 
 
-def grid(cfg: Config, n_r: int, n_h: int, per_cell: int, rng) -> list[tuple[ObjectParams, str]]:
-    e = cfg.envelope
+def grid(cfg: Config, n_r: int, n_h: int, per_cell: int, rng, e=None) -> list[tuple[ObjectParams, str]]:
+    e = e or cfg.envelope
     cells = []
     for r in np.linspace(e.r_min, e.r_max, n_r):
         for h in np.linspace(e.h_min, e.h_max, n_h):
@@ -107,23 +110,32 @@ def report(rows: list[dict]) -> dict:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("plan", choices=["a", "b", "c", "random"])
+    p.add_argument("plan", nargs="?", choices=["a", "b", "c", "s", "random"])
     p.add_argument("--grasp"); p.add_argument("--reorient"); p.add_argument("--policy")
     p.add_argument("--skills"); p.add_argument("--estimator")
     p.add_argument("--episodes", type=int, default=100, help="random episodes from the envelope")
     p.add_argument("--grid", action="store_true", help="sweep a radius x height grid instead")
+    p.add_argument("--wide", action="store_true", help="grid over the WIDE envelope, both start poses")
+    p.add_argument("--name", default=None, help="results file name (default plan_<plan>)")
     p.add_argument("--n-r", type=int, default=4); p.add_argument("--n-h", type=int, default=5)
     p.add_argument("--per-cell", type=int, default=2)
     p.add_argument("--seed", type=int, default=123)
     p.add_argument("--out", default="results")
+    p.add_argument("--merge", nargs="+", help="combine result files from parallel runs into --name instead of running")
     args = p.parse_args()
+    if args.merge:
+        rows = [e for f in args.merge for e in json.load(open(Path(args.out) / f"{f}.json"))["episodes"]]
+        with open(Path(args.out) / f"{args.name}.json", "w") as f:
+            json.dump({"summary": report(rows), "episodes": rows}, f, indent=1)
+        print(json.dumps(report(rows), indent=1))
+        return
 
     cfg = Config(seed=args.seed)
     scene = Scene(cfg)
     env = FullTaskEnv(scene, cfg, seed=args.seed)
     system = build(args, scene, cfg)
     rng = np.random.default_rng(args.seed)
-    cases = grid(cfg, args.n_r, args.n_h, args.per_cell, rng) if args.grid else [(None, None)] * args.episodes
+    cases = grid(cfg, args.n_r, args.n_h, args.per_cell, rng, WIDE if args.wide else None) if args.grid else [(None, None)] * args.episodes
     rows = []
     for i, (obj, pose) in enumerate(cases):
         rows.append(run_episode(env, system, obj, pose))
@@ -132,7 +144,7 @@ def main():
               f"epos={r['epos'] * 100:.1f}cm eang={r['eang_deg']:.0f}deg", flush=True)
     summary = report(rows)
     Path(args.out).mkdir(exist_ok=True)
-    with open(Path(args.out) / f"plan_{args.plan}.json", "w") as f:
+    with open(Path(args.out) / f"{args.name or 'plan_' + args.plan}.json", "w") as f:
         json.dump({"summary": summary, "episodes": rows}, f, indent=1)
     print(json.dumps(summary, indent=1))
 
