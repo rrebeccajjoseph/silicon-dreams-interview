@@ -119,10 +119,11 @@ class RewardWeights:
     drop: float = -10.0
     violation: float = -10.0
     action: float = 0.002
-    # pre-lift shaping only
-    approach: float = 1.0     # * exp(-dist / approach_scale)
+    # pre-lift shaping only. Kept small next to the lift bonus: at 1.0 per step the
+    # policy learned to hover beside the object for the whole episode instead of lifting.
+    approach: float = 0.1     # * exp(-dist / approach_scale)
     approach_scale: float = 0.1
-    lift: float = 10.0
+    lift: float = 30.0
 
 
 @dataclass
