@@ -4,10 +4,11 @@ rods are tipped over first, using the ground while that is still allowed.
 
 Reads only the deploy observation. Robot kinematics are known by construction.
 
-Measured on lying cylinders this wraps and holds roughly one object in three. The usual
-failure is a bounce: the close squeezes the object off the floor for an instant, which
-counts as lift, and the next ground contact is a violation. That is the strongest
-argument in this repo for learning the grasp (plans A and B)."""
+The usual failure is a pop: the closing fingers get under the rod and flick it off the floor,
+which counts as lift, and the next ground contact is a violation. Three things moved lying
+rods (r 2.2-2.8 cm, h 8-12 cm) from 1 in 12 to 266 of 480 handed over: a 2 ms physics step,
+pressing the palm into the rod before closing, and catching a pop by rising fast the moment
+the lift flag flips. The remaining pops are the strongest argument for a learned grasp."""
 
 from __future__ import annotations
 
@@ -19,10 +20,11 @@ from ..config import Config
 from ..observations import DEPLOY
 from ..scene import Scene, _rot
 
-# best of a small sweep over offsets and curls, see the report
-X_OFFSET = 0.035      # object sits this far toward the fingertips from the palm origin
-Z_CLEAR = 0.03        # palm face height above the object top before closing
-CLOSE_RAMP = 25       # steps to ramp the finger targets
+# best of a sweep on lying rods (r 2.2-2.8 cm, h 8-12 cm), 24 episodes per setting. Pressing the
+# palm into the rod keeps it pinned while the fingers wrap; a gap lets the close pop it off the floor
+X_OFFSET = 0.05       # object sits this far toward the fingertips from the palm origin
+Z_CLEAR = -0.02       # palm face target relative to the object top before closing (negative = press)
+CLOSE_RAMP = 12       # steps to ramp the finger targets
 GRASP_CURL = np.array([1.1, 0.0, 1.6, 1.2] * 3 + [1.3, 0.3, 1.0, 0.8])
 ROLL_SPEED = 0.3      # fraction of max arm speed for the wrist roll
 
@@ -33,8 +35,27 @@ def axis_from_outer(o: np.ndarray) -> np.ndarray:
 
 
 class ScriptedGrasp:
-    def __init__(self, scene: Scene, cfg: Config):
+    x_offset, z_clear, close_ramp, roll_speed = X_OFFSET, Z_CLEAR, CLOSE_RAMP, ROLL_SPEED
+    lift_while_closing = 0.0  # m/step the palm rises during the close, so a squeeze-pop keeps going up
+    # closing everything at once lets the thumb flick the rod off the floor before the fingers
+    # arrive; closing one side first gives the other side a wall to push against
+    close_order = "together"  # or "fingers_first", "thumb_first"
+    # a finger whose target runs this far ahead of its joint angle is blocked by the object or the
+    # floor; its target stops advancing, so the grasp squeezes instead of flicking. None = off
+    stall_err: float | None = None
+    tip_alpha = 1.2  # standing objects taller than this are tipped onto their side first
+    curl_extra = 0.0  # added to the finger flexion joints (not abduction) of GRASP_CURL
+    lift_speed = 0.004  # m per control step
+    # if the close pops the rod off the floor (the lift flag flips mid-close), finish the close and
+    # rise at this speed so it is caught instead of falling back. Uses only the flag, never T*
+    catch_speed: float | None = 0.012
+
+    def __init__(self, scene: Scene, cfg: Config, **overrides):
+        for k, v in overrides.items():
+            assert hasattr(self, k), k
+            setattr(self, k, v)
         self.scene, self.cfg = scene, cfg
+        self.curl = GRASP_CURL + self.curl_extra * np.array([1, 0, 1, 1] * 3 + [0, 0, 1, 1])
         self.d = mujoco.MjData(scene.model)  # kinematics only
         self.lo, self.hi = scene.model.actuator_ctrlrange.T
         self.reset()
@@ -47,10 +68,12 @@ class ScriptedGrasp:
         self.hand_from = self.scene.hand_open.copy()
         self.obj_world = None
         self.arm_speed = 1.0
+        self.rise = self.lift_speed
 
     # ------------------------------------------------------------ obs decode
     def _decode(self, obs: np.ndarray) -> None:
         self.arm_q = obs[DEPLOY["arm_q"]].astype(np.float64)
+        self.hand_q = obs[DEPLOY["hand_q"]].astype(np.float64)
         tgt = obs[DEPLOY["ctrl_target"]].astype(np.float64)
         self.targets = self.lo + (tgt + 1) * (self.hi - self.lo) / 2
         pw = obs[DEPLOY["palm_world"]]
@@ -92,7 +115,7 @@ class ScriptedGrasp:
         alpha = h / (2 * r)
 
         if self.phase == "observe":
-            if standing and alpha > 1.2:
+            if standing and alpha > self.tip_alpha:
                 self.phase = "tip_approach"
             else:
                 self.phase = "pregrasp"
@@ -116,8 +139,8 @@ class ScriptedGrasp:
         elif self.phase == "pregrasp":
             self.R_grasp = self._grasp_frame(a, standing)
             top = p[2] + (h / 2 if standing else r)
-            self.base = p - self.R_grasp[:, 0] * X_OFFSET
-            self.z_close = top + Z_CLEAR
+            self.base = p - self.R_grasp[:, 0] * self.x_offset
+            self.z_close = top + self.z_clear
             self.q_arm_goal = self._arm_ik(np.array([*self.base[:2], self.z_close + 0.10]), self.R_grasp)
             self.hand_goal = self.scene.hand_open.copy()
             if self._arrived() or self.timer > 80:
@@ -127,20 +150,43 @@ class ScriptedGrasp:
             if self._arrived(0.01) or self.timer > 60:
                 self.phase, self.timer = "close", 0
                 self.hand_from = self.targets[7:].copy()
+        elif self.phase == "close" and self.catch_speed and obs[DEPLOY["target"]][-1] > 0.5:
+            self.hand_goal = self.curl.copy()
+            self.phase, self.timer, self.rise = "lift", 0, self.catch_speed
+            self.z_close = self.scene_palm_z(obs)
         elif self.phase == "close":
-            self._ramp_hand(GRASP_CURL, self.timer / CLOSE_RAMP)
-            if self.timer > CLOSE_RAMP + 10:
+            if self.close_order == "together":
+                self._ramp_hand(self.curl, self.timer / self.close_ramp)
+            else:
+                first = slice(0, 12) if self.close_order == "fingers_first" else slice(12, 16)
+                f1 = min(1.0, self.timer / self.close_ramp)
+                f2 = min(1.0, max(0.0, self.timer / self.close_ramp - 1.0))
+                frac = np.full(16, f2)
+                frac[first] = f1
+                self.hand_goal = self.hand_from + (self.curl - self.hand_from) * frac
+            if self.stall_err is not None:
+                closing = np.sign(self.curl - self.hand_from)
+                cap = self.hand_q + closing * self.stall_err
+                self.hand_goal = np.where(closing > 0, np.minimum(self.hand_goal, cap), np.maximum(self.hand_goal, cap))
+            if self.lift_while_closing:
+                self.z_close += self.lift_while_closing
+                self.q_arm_goal = self._arm_ik(np.array([*self.base[:2], self.z_close]), self.R_grasp)
+            if self.timer > (1 if self.close_order == "together" else 2) * self.close_ramp + 10:
                 self.phase, self.timer = "lift", 0
         elif self.phase == "lift":
-            z = self.z_close + min(0.15, 0.004 * self.timer)  # 8 cm/s
+            z = self.z_close + min(0.15, self.rise * self.timer)
             self.q_arm_goal = self._arm_ik(np.array([*self.base[:2], z]), self.R_grasp)
             if self.timer > 50:
                 self.phase, self.timer = "roll", 0
         elif self.phase == "roll":
             # slow joint-space move to the palm-up hold configuration
-            self.arm_speed = ROLL_SPEED
+            self.arm_speed = self.roll_speed
             self.q_arm_goal = self.scene.q_hold
         return self._action()
+
+    @staticmethod
+    def scene_palm_z(obs: np.ndarray) -> float:
+        return float(obs[DEPLOY["palm_world"]][2])
 
     @staticmethod
     def _grasp_frame(a: np.ndarray, standing: bool) -> np.ndarray:

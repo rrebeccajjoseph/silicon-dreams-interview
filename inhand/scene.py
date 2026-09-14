@@ -89,7 +89,7 @@ def build_spec(cfg: Config) -> mujoco.MjSpec:
     spec.option.timestep = cfg.control.sim_dt
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
-    spec.option.impratio = 100
+    spec.option.impratio = 10
     spec.option.noslip_iterations = 2
 
     flange = next(s for s in spec.sites if s.name == "attachment_site")
@@ -109,7 +109,7 @@ def build_spec(cfg: Config) -> mujoco.MjSpec:
     obj.add_freejoint(name="obj_free")
     obj.add_geom(name="obj", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.02, 0.05, 0],
                  condim=4, friction=[0.8, 0.005, 0.0001], rgba=[0.9, 0.5, 0.1, 1],
-                 solref=[0.005, 1], solimp=[0.95, 0.99, 0.001, 0.5, 2])
+                 solref=[0.01, 1], solimp=[0.9, 0.95, 0.002, 0.5, 2])
     w.add_camera(name="video", pos=CAM_POS, xyaxes=_look_at(CAM_POS, CAM_LOOKAT))
     return spec
 

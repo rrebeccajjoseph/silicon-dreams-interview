@@ -10,18 +10,20 @@ import numpy as np
 @dataclass
 class Envelope:
     """Object geometry envelope G. Bounds are in metres and relative to the LEAP hand
-    (finger span ~0.09 m across index..ring, fingertip reach ~0.12 m from the palm)."""
+    (finger span ~0.09 m across index..ring, fingertip reach ~0.12 m from the palm).
+    Defaults are the trained scope: lying rods around r 2.5 cm, alpha ~2. WIDE is the
+    envelope we measure against, not one we claim."""
 
-    r_min: float = 0.012
-    r_max: float = 0.035
-    h_min: float = 0.02
-    h_max: float = 0.16
-    density_min: float = 300.0   # kg/m^3, roughly balsa to dense plastic
-    density_max: float = 1200.0
+    r_min: float = 0.022
+    r_max: float = 0.028
+    h_min: float = 0.08
+    h_max: float = 0.12
+    density_min: float = 500.0   # kg/m^3
+    density_max: float = 900.0
     # standing on an end face is only sampled when it is comfortably stable
     alpha_stand_max: float = 3.0
     alpha_lie_min: float = 0.15  # a thin disk on its rim just falls over
-    start_poses: tuple[str, ...] = ("lying", "standing")
+    start_poses: tuple[str, ...] = ("lying",)
 
     def sample(self, rng: np.random.Generator) -> tuple[float, float, float]:
         r = rng.uniform(self.r_min, self.r_max)
@@ -41,10 +43,14 @@ class Envelope:
         return e
 
 
+WIDE = Envelope(r_min=0.012, r_max=0.035, h_min=0.02, h_max=0.16, density_min=300.0,
+                density_max=1200.0, start_poses=("lying", "standing"))
+
+
 @dataclass
 class Friction:
-    ground: tuple[float, float] = (0.4, 1.0)
-    obj: tuple[float, float] = (0.5, 1.2)
+    ground: tuple[float, float] = (0.5, 0.9)
+    obj: tuple[float, float] = (0.7, 1.1)
 
 
 @dataclass
@@ -68,8 +74,10 @@ class Sensors:
 
 @dataclass
 class Control:
-    sim_dt: float = 0.004   # 2 ms was stable too but 1.65x slower; no NaNs or extra drops at 4 ms
-    ctrl_hz: float = 25.0   # 10 substeps
+    # 4 ms was stable (no NaNs) but not accurate: finger contacts flicked the object at up to
+    # 0.8 m/s and the scripted grasp handed over 1 in 12 rods. 2 ms with softer object contacts: 1 in 2
+    sim_dt: float = 0.002
+    ctrl_hz: float = 25.0   # 20 substeps
     arm_step: float = 0.04    # rad per control step, delta position target
     hand_step: float = 0.25
 
@@ -98,7 +106,15 @@ class Targets:
     fingertip workspace, and no penetration with the palm at open fingers."""
 
     max_radius: float = 0.08
-    z_clear_max: float = 0.02
+    z_clear_max: float = 0.01
+    # axis within a cone about palm y (across the fingers), position in a box above the palm.
+    # Fixed in the palm frame, so nothing about it depends on the grasp.
+    axis_nominal: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    axis_cone: float = np.deg2rad(40.0)
+    # centred on where the hand holds a rod after the palm-up roll (median x -3.1 cm over 200
+    # handovers). Chosen once from that distribution, never per episode
+    x_range: tuple[float, float] = (-0.045, -0.015)
+    y_range: tuple[float, float] = (-0.015, 0.015)
     # curriculum: reorient training starts with targets close to the lift pose
     ang_curriculum: tuple[float, float] = (np.deg2rad(20.0), np.pi / 2)
     pos_curriculum: tuple[float, float] = (0.01, 0.05)
