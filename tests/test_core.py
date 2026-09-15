@@ -96,3 +96,36 @@ def test_deployed_actor_rejects_privileged(scene, tmp_path):
     ppo.save(str(tmp_path / "t.pt"))
     with pytest.raises(ValueError):
         load_actor(str(tmp_path / "t.pt"), deploy_only=True)
+
+
+def test_hand_torque_is_limited_to_the_urdf(scene):
+    from inhand.scene import HAND_EFFORT
+    m = scene.model
+    assert m.actuator_forcelimited[scene.ids.hand_acts].all()
+    assert np.allclose(np.abs(m.actuator_forcerange[scene.ids.hand_acts]), HAND_EFFORT)
+
+
+def test_brief_hand_only_contact_counts_as_lift(scene):
+    """A pop shorter than a control period must still reveal the target and arm the constraint."""
+    env = CylinderEnv(scene, Config(), mode="ground", seed=0)
+    env.reset()
+    hand_only = type(env.contacts)(obj_hand=True)
+    ground = type(env.contacts)(obj_hand=True, obj_ground=True)
+    seq = iter([hand_only] + [ground] * (env.cfg.control.substeps - 1))
+    import inhand.env as envmod
+    real = envmod.classify
+    envmod.classify = lambda m, d, i: next(seq, ground)
+    try:
+        _, _, done, info = env.step(np.zeros(23))
+    finally:
+        envmod.classify = real
+    assert env.ep.lifted and done and info["reason"] == "violation_ground"
+
+
+def test_vision_updates_only_on_camera_frames(scene):
+    env = CylinderEnv(scene, Config(), mode="ground", seed=0)
+    obs = env.reset()
+    v0 = obs["deploy"][DEPLOY["vision"]].copy()
+    env._set_obj_world(env.obj_pos_w + [0.05, 0, 0], np.array([1.0, 0, 0, 0]))
+    obs, *_ = env.step(np.zeros(23))  # t=1: not a camera frame at 25 Hz control, 5 Hz camera
+    assert np.allclose(obs["deploy"][DEPLOY["vision"]][:3], v0[:3])

@@ -97,6 +97,7 @@ class CylinderEnv:
         # saved handover states from the scripted grasp; in-hand resets draw from them bank_frac of the time
         self.bank = dict(np.load(bank_path)) if bank_path else None
         self.bank_frac = bank_frac
+        self.lifted_now, self.violation, self.vision_ok, self.vis_frac = False, None, False, 0.0
 
     # ---------------------------------------------------------------- reset
     def reset(self, obj: ObjectParams | None = None, start_pose: str | None = None) -> dict:
@@ -229,10 +230,23 @@ class CylinderEnv:
         delta = action * self.step_size
         if self.ep.arm_frozen:
             delta[:7] = 0
+        prev = self.targets.copy()
         self.targets = np.clip(self.targets + delta, self.ctrl_lo, self.ctrl_hi)
-        self.d.ctrl[:] = self.targets
-        for _ in range(self.cfg.control.substeps):
+        # lift and violations are checked after every physics step: a pop or a brush against the
+        # ground that lasts less than a control period still counts
+        self.lifted_now = False
+        self.violation = None
+        n = self.cfg.control.substeps
+        for k in range(n):
+            # the setpoint ramps across the control period, like a servo's velocity profile;
+            # a step change made the light LEAP fingers overshoot their 8.48 rad/s limit
+            self.d.ctrl[:] = prev + (self.targets - prev) * (k + 1) / n
             mujoco.mj_step(self.m, self.d)
+            c = classify(self.m, self.d, self.ids)
+            if not self.ep.lifted and c.hand_only:
+                self.ep.lifted, self.ep.lift_step, self.lifted_now = True, self.ep.t + 1, True
+            elif self.ep.lifted and self.violation is None and (c.obj_ground or c.obj_arm or c.obj_other):
+                self.violation = "violation_ground" if c.obj_ground else ("violation_arm" if c.obj_arm else "violation_other")
         self.ep.t += 1
         self._update_state()
         sig = self._signals(action)
@@ -261,25 +275,30 @@ class CylinderEnv:
         self.obj_p, self.obj_a = frames.in_palm(p_palm, R_palm, self.obj_pos_w, R_obj)
         self.contacts: ContactState = classify(self.m, self.d, self.ids)
         self.tact = tactile(self.m, self.d, self.ids, self.cfg.sensors.pads)
-        if self.ep.t % self.cam_every == 0:  # cameras run slower than the controller
-            wrist = self.d.xpos[self.ids.palm_body] + self.d.xmat[self.ids.palm_body].reshape(3, 3) @ self.cfg.sensors.wrist_cam_pos
-            cams = np.vstack([self.ext_cams, wrist])
-            self.vis_frac = visible_fraction(self.m, self.d, self.ids, self.pts_obj, cams)
         self.R_palm = R_palm
         self.p_palm = p_palm
+        if self.ep.t % self.cam_every == 0:
+            # a camera frame: the pose estimate updates only here and is held between frames
+            sn = self.cfg.sensors
+            R_body = self.d.xmat[self.ids.palm_body].reshape(3, 3)
+            wrist = self.d.xpos[self.ids.palm_body] + R_body @ sn.wrist_cam_pos
+            cams = np.vstack([self.ext_cams, wrist])
+            aims = np.vstack([np.repeat([sn.camera_lookat], len(self.ext_cams), 0), p_palm + R_palm @ sn.wrist_cam_target_palm])
+            fwd = aims - cams
+            fwd /= np.linalg.norm(fwd, axis=1, keepdims=True)
+            self.vis_frac = visible_fraction(self.m, self.d, self.ids, self.pts_obj, cams, fwd, np.cos(np.deg2rad(sn.camera_half_fov_deg)))
+            self.vision_ok = self.vis_frac >= sn.visible_frac
+            if self.vision_ok:
+                self.ep.last_vision = np.concatenate([self.obj_p, frames.axis_outer(self.obj_a), [self.obj.r, self.obj.h]])
 
     def _signals(self, action: np.ndarray) -> Signals:
         c = self.contacts
-        lifted_now = False
-        if not self.ep.lifted and c.hand_only:
-            self.ep.lifted = True
-            self.ep.lift_step = self.ep.t
-            lifted_now = True
-        violation = self.ep.lifted and not lifted_now and (c.obj_ground or c.obj_arm or c.obj_other)
+        lifted_now = self.lifted_now
+        violation = self.violation is not None
         self.ep.no_contact = self.ep.no_contact + 1 if (self.ep.lifted and not c.obj_hand) else 0
         dropped = self.ep.no_contact >= DROP_STEPS
         epos, eang = frames.errors(self.obj_p, self.obj_a, self.target_p, self.target_a)
-        in_tol = self.ep.lifted and c.hand_only and epos <= self.cfg.success.pos_tol and eang <= self.cfg.success.ang_tol
+        in_tol = self.ep.lifted and c.hand_only and not violation and epos <= self.cfg.success.pos_tol and eang <= self.cfg.success.ang_tol
         if in_tol:
             self.ep.hold_count += 1
             self.ep.arm_frozen = True
@@ -299,7 +318,7 @@ class CylinderEnv:
         if s.success:
             return True, "success"
         if s.violation:
-            return True, "violation_ground" if c.obj_ground else ("violation_arm" if c.obj_arm else "violation_other")
+            return True, self.violation
         if s.dropped:
             return True, "dropped"
         # the hand touching the floor is allowed (scooping is extrinsic dexterity);
@@ -321,12 +340,7 @@ class CylinderEnv:
 
     def _obs(self) -> dict:
         d, ids, sc = self.d, self.ids, self.scene
-        gt = np.concatenate([self.obj_p, frames.axis_outer(self.obj_a), [self.obj.r, self.obj.h]])
-        if self.vis_frac >= self.cfg.sensors.visible_frac:
-            self.ep.last_vision = gt
-            vision = np.concatenate([gt, [1.0]])
-        else:
-            vision = np.concatenate([self.ep.last_vision, [0.0]])
+        vision = np.concatenate([self.ep.last_vision, [1.0 if self.vision_ok else 0.0]])
         true_target = np.concatenate([self.target_p, frames.axis_outer(self.target_a)])
         target = np.concatenate([true_target, [1.0]]) if self.ep.lifted else np.zeros(10)
         R = self.R_palm

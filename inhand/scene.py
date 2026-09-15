@@ -19,6 +19,19 @@ HAND_XML = ASSETS / "leap_hand" / "right_hand.xml"
 # the hand sits on a bracket this far out from the flange, like a real LEAP mount; it
 # keeps long rods lying across the palm from touching the wrist link
 MOUNT_OFFSET = 0.04
+BRACKET_RADIUS = 0.032  # matches the xArm flange
+
+# joint limits from the source URDFs (dexsuite leap_hand_right.urdf, xarm_ros xarm7.urdf).
+# Torque is enforced by the actuators; speed is checked and reported by eval.py
+HAND_EFFORT = 0.95      # N m
+HAND_VELOCITY = 8.48    # rad/s
+ARM_VELOCITY = 3.14     # rad/s
+
+# object-ground contact counts within this distance. Soft contacts sink 1-3 mm and flicker for
+# single 2 ms steps when a grasped rod is disturbed; without a band those flickers read as a lift
+# followed by a ground violation. The band is stricter both ways: lift needs the object 1 mm clear,
+# and coming within 1 mm of the ground after lift is a violation
+CONTACT_RESOLUTION = 0.001
 
 # palm frame in the LEAP palm body: origin on the palm face under the fingers,
 # x toward the fingertips, z is the outward palm normal (object side)
@@ -96,6 +109,14 @@ def build_spec(cfg: Config) -> mujoco.MjSpec:
     link7 = next(b for b in spec.bodies if b.name == "link7")
     mount = link7.add_site(name="hand_mount", pos=np.asarray(flange.pos) + [0, 0, MOUNT_OFFSET], quat=flange.quat)
     spec.attach(hand, prefix="hand/", site=mount)
+    # the bracket is solid: an object between flange and palm counts as touching the arm
+    link7.add_geom(name="bracket", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[BRACKET_RADIUS, MOUNT_OFFSET / 2, 0],
+                   pos=np.asarray(flange.pos) + [0, 0, MOUNT_OFFSET / 2], quat=flange.quat, rgba=[0.6, 0.6, 0.6, 1])
+    # the Menagerie LEAP model has no torque limit; the URDF it was derived from says 0.95 N m per joint
+    for act in spec.actuators:
+        if act.name.startswith("hand/"):
+            act.forcelimited = mujoco.mjtLimited.mjLIMITED_TRUE
+            act.forcerange = [-HAND_EFFORT, HAND_EFFORT]
 
     palm = next(b for b in spec.bodies if b.name == "hand/palm")
     s = palm.add_site(name="palm_frame", pos=PALM_SITE_POS, quat=PALM_SITE_QUAT, size=[0.004] * 3)
@@ -103,8 +124,11 @@ def build_spec(cfg: Config) -> mujoco.MjSpec:
 
     w = spec.worldbody
     w.add_light(pos=[0, 0, 1.5], dir=[0, 0, -1], type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL)
+    # margin == gap: pairs within CONTACT_RESOLUTION of the floor are reported as contacts but apply
+    # no force, so the physics is unchanged while lift and violations see a 1 mm contact band
     w.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE, size=[0, 0, 0.05],
-               friction=[0.7, 0.005, 0.0001], rgba=[0.3, 0.35, 0.4, 1])
+               friction=[0.7, 0.005, 0.0001], rgba=[0.3, 0.35, 0.4, 1],
+               margin=CONTACT_RESOLUTION, gap=CONTACT_RESOLUTION)
     obj = w.add_body(name="obj", pos=[0.45, 0, 0.05])
     obj.add_freejoint(name="obj_free")
     obj.add_geom(name="obj", type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.02, 0.05, 0],

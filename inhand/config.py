@@ -68,8 +68,15 @@ class Sensors:
         (1.1, 0.7, 0.9),    # fixed external, looking at the workspace
         (1.1, -0.7, 0.9),   # second external, other side
     )
-    # wrist camera on a bracket behind the wrist, in the LEAP palm body frame
+    camera_lookat: tuple[float, float, float] = (0.45, 0.0, 0.2)  # between the floor workspace and the palm-up hold
+    # RealSense D435/D405-class RGB-D, 640x480 at 30 Hz. The frustum (87 x 58 deg) is approximated
+    # by a cone with the narrow half-angle, so a point counts as in view only if it is inside both axes
+    camera_resolution: tuple[int, int] = (640, 480)
+    camera_half_fov_deg: float = 29.0
+    # wrist camera on a bracket behind the wrist, in the LEAP palm body frame, aimed at a point 2 cm
+    # above the palm-frame origin
     wrist_cam_pos: tuple[float, float, float] = (-0.13, -0.037, -0.09)
+    wrist_cam_target_palm: tuple[float, float, float] = (0.0, 0.0, 0.02)
 
 
 @dataclass
@@ -111,10 +118,10 @@ class Targets:
     # Fixed in the palm frame, so nothing about it depends on the grasp.
     axis_nominal: tuple[float, float, float] = (0.0, 1.0, 0.0)
     axis_cone: float = np.deg2rad(40.0)
-    # centred on where the hand holds a rod after the palm-up roll (median x -3.1 cm over 200
-    # handovers). Chosen once from that distribution, never per episode
-    x_range: tuple[float, float] = (-0.045, -0.015)
-    y_range: tuple[float, float] = (-0.015, 0.015)
+    # centred on where the hand holds a rod after the palm-up roll (median x -1.3, y -1.2 cm over 300
+    # handovers of the final grasp). Chosen once from that distribution, never per episode
+    x_range: tuple[float, float] = (-0.028, 0.002)
+    y_range: tuple[float, float] = (-0.027, 0.003)
     # curriculum: reorient training starts with targets close to the lift pose
     ang_curriculum: tuple[float, float] = (np.deg2rad(20.0), np.pi / 2)
     pos_curriculum: tuple[float, float] = (0.01, 0.05)
