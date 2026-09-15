@@ -13,3 +13,5 @@ videos/*.log
 wandb/
 slurm/
 MUJOCO_LOG.TXT
+# the report ships as a PDF; its HTML source stays local
+report/report.html

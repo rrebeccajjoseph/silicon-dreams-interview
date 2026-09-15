@@ -98,8 +98,6 @@ uv run python scripts/record_video.py s --episodes 2 --seed 125 --want success
 uv run python scripts/record_video.py s --episodes 1 --seed 125 --want dropped
 uv run python scripts/record_video.py s --episodes 1 --seed 126 --want violation_arm
 uv run python scripts/record_video.py s --episodes 5 --seed 11 --wide
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --no-pdf-header-footer \
-    --print-to-pdf=report/report.pdf "file://$PWD/report/report.html"
 ```
 
 Videos show the workspace and a close-up with the target as a green ghost once it is revealed.
@@ -119,7 +117,7 @@ inhand/planc/scripted_grasp.py  the grasp script
 inhand/systems.py               deployed systems; PlanS is the submission
 inhand/rl/                      PPO (asymmetric critic, GRU), DAgger, relabeling, curricula
 scripts/                        train, eval_parallel, collect_handovers, report_figs, record_video, remote/
-report/                         report.html -> report.pdf, figs/
+report/                         report.pdf and its figures (figs/ from scripts/report_figs.py)
 results/                        submitted results; v1_loose/ holds the superseded 40 ms results
 ```
 
