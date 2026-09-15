@@ -49,7 +49,7 @@ DR=$(job distill_reorient "$R" $(mins 25) "$PY distill --teacher $CK/reorient_te
 DG=$(job distill_grasp    "$G" $(mins 25) "$PY distill --teacher $CK/grasp_a_teacher.pt --env grasp --name grasp_a_student --minutes $(mins 15) $COMMON")
 DS=$(job distill_skills   "$S" $(mins 25) "$PY distill --teacher $CK/skills_c_teacher.pt --env prims --name skills_c_student --minutes $(mins 15) $COMMON")
 E=$(job estimator_c       "$DS" $(mins 20) "$PY estimator-c --policy $CK/skills_c_student.pt --minutes $(mins 10) $COMMON")
-EVAL="uv run python scripts/eval.py"
+EVAL="uv run python eval.py"
 GRID="--grid --n-r 3 --n-h 4 --per-cell 1"
 EV=$(job eval_all "$DR:$DG:$DS:$E:$B" 45 "$EVAL a --grasp $CK/grasp_a_student.pt --reorient $CK/reorient_student.pt $GRID; $EVAL b --policy $CK/mono_b.pt $GRID; $EVAL c --skills $CK/skills_c_student.pt --estimator $CK/estimator_c.pt $GRID; $EVAL c --skills $CK/skills_c_student.pt --estimator $CK/estimator_c.pt --grasp $CK/grasp_a_student.pt $GRID --out results/c_hybrid; $EVAL random $GRID; uv run python scripts/record_video.py a --grasp $CK/grasp_a_student.pt --reorient $CK/reorient_student.pt --episodes 4; uv run python scripts/record_video.py b --policy $CK/mono_b.pt --episodes 4; uv run python scripts/record_video.py c --skills $CK/skills_c_student.pt --estimator $CK/estimator_c.pt --episodes 4")
 

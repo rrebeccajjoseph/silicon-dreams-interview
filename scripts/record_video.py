@@ -9,7 +9,7 @@ import imageio
 import mujoco
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from eval import build  # noqa: E402
 
 import argparse  # noqa: E402
@@ -50,7 +50,7 @@ def frame(env: FullTaskEnv, renderer: mujoco.Renderer) -> np.ndarray:
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("plan", choices=["a", "b", "c", "s", "random"])
+    p.add_argument("plan", nargs="?", default="s", choices=["s", "hold", "a", "b", "c", "random"])
     p.add_argument("--grasp"); p.add_argument("--reorient"); p.add_argument("--policy")
     p.add_argument("--skills"); p.add_argument("--estimator")
     p.add_argument("--episodes", type=int, default=3)
@@ -79,7 +79,7 @@ def main():
         frames = []
         info = rollout(env, system, lambda: frames.append(frame(env, renderer)))
         tried += 0 if args.want else 1
-        name = f"plan{args.plan}_s{args.seed}_{saved}_d{200 * env.obj.r:.1f}cm_h{100 * env.obj.h:.0f}cm_alpha{env.obj.alpha:.1f}_{env.ep.start_pose}_{info['reason']}.mp4"
+        name = f"plan{args.plan}_s{args.seed}_{saved}_d{200 * env.obj.r:.1f}cm_h{100 * env.obj.h:.0f}cm_alpha{env.obj.alpha:.1f}_{env.ep.start_pose}_{info['reason']}_during-{getattr(system, 'stage', 'na')}.mp4"
         imageio.mimwrite(Path(args.out) / name, np.stack(frames), fps=int(cfg.control.ctrl_hz))
         saved += 1
         print("wrote", name, flush=True)

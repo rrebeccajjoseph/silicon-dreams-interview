@@ -68,7 +68,7 @@ def taxonomy(policy, hold, out):
         ax.barh(y + off, vals, height=h, color=color, label=name)
         for yi, v in zip(y + off, vals):
             if v > 0:
-                ax.text(v + 0.5, yi, f"{v:.1f}%" if v < 1 else f"{v:.0f}%", va="center", fontsize=7, color=INK2)
+                ax.text(v + 0.5, yi, f"{v:.1f}%", va="center", fontsize=7, color=INK2)
     ax.set_yticks(y, keys)
     ax.invert_yaxis()
     ax.grid(axis="y", visible=False)

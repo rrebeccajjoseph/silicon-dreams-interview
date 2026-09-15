@@ -4,11 +4,13 @@ rods are tipped over first, using the ground while that is still allowed.
 
 Reads only the deploy observation. Robot kinematics are known by construction.
 
-The usual failure is a pop: the closing fingers get under the rod and flick it off the floor,
-which counts as lift, and the next ground contact is a violation. Three things moved lying
-rods (r 2.2-2.8 cm, h 8-12 cm) from 1 in 12 to 266 of 480 handed over: a 2 ms physics step,
-pressing the palm into the rod before closing, and catching a pop by rising fast the moment
-the lift flag flips. The remaining pops are the strongest argument for a learned grasp."""
+The usual failure is a pop: the closing fingers lever the rod a millimetre or two off the floor,
+which counts as lift, and it settles back (a ground violation). It is easy to miss: sampled every
+40 ms this script looked like 55 % handover; checked every physics step with the URDF torque limits
+it was 3-9 %. What recovered ~48 %: a safe-height approach (a straight joint move from home swept
+the fingers through the rod), pressing the palm into the rod, a 4 s close, catching a pop by rising
+the moment the lift flag flips, and a fast lift. The remaining failures are the rod slipping back
+onto the floor during the lift, which is the strongest argument for a learned grasp."""
 
 from __future__ import annotations
 
@@ -24,9 +26,10 @@ from ..scene import Scene, _rot
 # palm into the rod keeps it pinned while the fingers wrap; a gap lets the close pop it off the floor
 X_OFFSET = 0.05       # object sits this far toward the fingertips from the palm origin
 Z_CLEAR = -0.02       # palm face target relative to the object top before closing (negative = press)
-CLOSE_RAMP = 12       # steps to ramp the finger targets
+CLOSE_RAMP = 100      # steps to ramp the finger targets (4 s: a fast close flicks the rod off the floor)
 GRASP_CURL = np.array([1.1, 0.0, 1.6, 1.2] * 3 + [1.3, 0.3, 1.0, 0.8])
 ROLL_SPEED = 0.3      # fraction of max arm speed for the wrist roll
+SAFE_Z = 0.25         # palm height for the approach before dropping to the pregrasp
 
 
 def axis_from_outer(o: np.ndarray) -> np.ndarray:
@@ -45,7 +48,10 @@ class ScriptedGrasp:
     stall_err: float | None = None
     tip_alpha = 1.2  # standing objects taller than this are tipped onto their side first
     curl_extra = 0.0  # added to the finger flexion joints (not abduction) of GRASP_CURL
-    lift_speed = 0.004  # m per control step
+    lift_speed = 0.012  # m per control step; slower lifts let the rod slip back onto the floor
+    # the first part of the lift is slow so the rod leaves the floor quasi-statically instead of
+    # springing off the palm press
+    lift_slow_m, lift_slow_speed = 0.0, 0.001
     # if the close pops the rod off the floor (the lift flag flips mid-close), finish the close and
     # rise at this speed so it is caught instead of falling back. Uses only the flag, never T*
     catch_speed: float | None = 0.012
@@ -69,6 +75,7 @@ class ScriptedGrasp:
         self.obj_world = None
         self.arm_speed = 1.0
         self.rise = self.lift_speed
+        self._high_done = False
 
     # ------------------------------------------------------------ obs decode
     def _decode(self, obs: np.ndarray) -> None:
@@ -141,7 +148,12 @@ class ScriptedGrasp:
             top = p[2] + (h / 2 if standing else r)
             self.base = p - self.R_grasp[:, 0] * self.x_offset
             self.z_close = top + self.z_clear
-            self.q_arm_goal = self._arm_ik(np.array([*self.base[:2], self.z_close + 0.10]), self.R_grasp)
+            # a straight joint-space move from home dips the fingers into the object, so pass high first
+            above = self.timer < 40 and not getattr(self, "_high_done", False)
+            z = max(self.z_close + 0.10, SAFE_Z) if above else self.z_close + 0.10
+            self.q_arm_goal = self._arm_ik(np.array([*self.base[:2], z]), self.R_grasp)
+            if above and self._arrived(0.03):
+                self._high_done = True
             self.hand_goal = self.scene.hand_open.copy()
             if self._arrived() or self.timer > 80:
                 self.phase, self.timer = "descend", 0
@@ -174,9 +186,15 @@ class ScriptedGrasp:
             if self.timer > (1 if self.close_order == "together" else 2) * self.close_ramp + 10:
                 self.phase, self.timer = "lift", 0
         elif self.phase == "lift":
-            z = self.z_close + min(0.15, self.rise * self.timer)
+            t_slow = self.lift_slow_m / self.lift_slow_speed
+            if self.rise == self.lift_speed and self.timer < t_slow:
+                dz = self.lift_slow_speed * self.timer
+            else:
+                t0 = t_slow if self.rise == self.lift_speed else 0.0
+                dz = (self.lift_slow_m if t0 else 0.0) + self.rise * (self.timer - t0)
+            z = self.z_close + min(0.15, dz)
             self.q_arm_goal = self._arm_ik(np.array([*self.base[:2], z]), self.R_grasp)
-            if self.timer > 50:
+            if self.timer > 50 + self.lift_slow_m / self.lift_slow_speed:
                 self.phase, self.timer = "roll", 0
         elif self.phase == "roll":
             # slow joint-space move to the palm-up hold configuration
